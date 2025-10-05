@@ -83,8 +83,7 @@ Simple passthrough bridge: **SIP (G.711 μ-law @ 8kHz)** ↔ **AI voice models**
 graph LR
     SIP[SIP/PJSUA2<br/>PCM16 @ 8kHz] <--> AA[AudioAdapter<br/>Codec Only]
     AA <--> AI[AI WebSocket<br/>G.711 μ-law @ 8kHz]
-
-    style AA fill:#f9f,stroke:#333,stroke-width:2px
+    
 ```
 
 **Design Philosophy**: Minimal client logic. The bridge is a transparent audio pipe:
