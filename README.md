@@ -13,25 +13,25 @@ Simple passthrough bridge: **SIP (G.711 μ-law @ 8kHz)** ↔ **AI voice models**
 
 **Prerequisites:** Python 3.12+, UV package manager
 
-1. **Install PJSUA2** (from local build):
-   ```bash
-   cd ~/pjproject/pjsip-apps/src/swig/python
-   uv pip install .
-
-   # Verify
-   python -c "import pjsua2 as pj; ep = pj.Endpoint(); ep.libCreate(); print('PJSUA2:', ep.libVersion().full); ep.libDestroy()"
-   ```
-
-   See [PJSIP Building Documentation](https://docs.pjsip.org/en/latest/pjsua2/building.html) for details.
-
-
-2. **Install dependencies:**
+1. **Install dependencies:**
    ```bash
    git clone <repository-url>
    cd sip-to-ai
    uv venv && source .venv/bin/activate
    uv sync
    ```
+2. **Install PJSUA2** (from local build):  
+   First, build and install PJSIP following the [official build instructions](https://docs.pjsip.org/en/latest/get-started/posix/build_instructions.html).  
+   After completing `make install` to install headers and libraries, install the Python bindings:  
+   ```bash
+   cd <pjproject>/pjsip-apps/src/swig/python
+   uv pip install .
+
+   # Verify installation
+   python -c "import pjsua2 as pj; ep = pj.Endpoint(); ep.libCreate(); print('PJSUA2:', ep.libVersion().full); ep.libDestroy()"
+   ```
+
+
 
 3. **Configure environment:**
    ```bash
