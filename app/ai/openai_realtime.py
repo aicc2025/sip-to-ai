@@ -313,7 +313,7 @@ class OpenAIRealtimeClient(AiDuplexBase):
             "type": "session.update",
             "session": {
                 "type": "realtime",
-                "model": "gpt-realtime",
+                "model": self._model,
                 "output_modalities": ["audio"],
                 "audio": {
                     "input": {
