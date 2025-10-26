@@ -3,7 +3,7 @@
 import asyncio
 import pytest
 
-from app.core.ring_buffer import RingBuffer, StreamBuffer
+from app.utils.ring_buffer import RingBuffer, StreamBuffer
 
 
 class TestRingBuffer:

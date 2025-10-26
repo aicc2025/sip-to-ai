@@ -13,10 +13,10 @@ from pathlib import Path
 from app.ai.deepgram_agent import DeepgramAgentClient
 from app.ai.duplex_base import AiDuplexClient
 from app.ai.openai_realtime import OpenAIRealtimeClient
+from app.bridge import AudioAdapter, CallSession
 from app.config import config
-from app.core.agent_config import AgentConfig
-from app.sip.audio_adapter import AudioAdapter, CallSession
-from app.sip.pjsua2_endpoint import create_endpoint
+from app.utils.agent_config import AgentConfig
+from app.sip_async import AsyncCall, AsyncSIPServer
 
 
 def setup_logging() -> None:
@@ -185,41 +185,74 @@ async def run_real_mode() -> None:
     Each incoming call will create its own AI client and bridge.
     """
     logger = structlog.get_logger(__name__)
-    logger.info("Starting SIP-to-AI Bridge")
+    logger.info("Starting SIP-to-AI Bridge (Pure Asyncio)")
 
-    # Get asyncio event loop for PJSUA2 callbacks
-    event_loop = asyncio.get_running_loop()
-    logger.info("Obtained asyncio event loop for PJSUA2 callbacks")
+    async def on_incoming_call(call: AsyncCall) -> None:
+        """Handle incoming call - setup AudioAdapter and AI session.
 
-    # Create SIP endpoint (userless account - receive only)
-    logger.info("Creating SIP endpoint", domain=config.sip.domain, port=config.sip.port)
-    sip_endpoint = create_endpoint(
-        domain=config.sip.domain,
-        transport_type=config.sip.transport_type,
+        Args:
+            call: AsyncCall instance
+        """
+        logger.info(
+            "Incoming call - setting up resources",
+            call_id=call.call_id
+        )
+
+        try:
+            # Create AudioAdapter for this call
+            audio_adapter = AudioAdapter(
+                uplink_capacity=config.audio.uplink_buf_frames,
+                downlink_capacity=config.audio.downlink_buf_frames
+            )
+
+            # Create AI client for this call
+            ai_client = create_ai_client()
+
+            # Create CallSession
+            call_session = CallSession(
+                audio_adapter=audio_adapter,
+                ai_client=ai_client
+            )
+
+            # Setup call with these components
+            await call.setup(audio_adapter, call_session)
+
+            logger.info(
+                "Call resources created",
+                call_id=call.call_id,
+                ai_vendor=config.ai.vendor
+            )
+
+        except Exception as e:
+            logger.error(
+                "Failed to setup call resources",
+                call_id=call.call_id,
+                error=str(e),
+                exc_info=True
+            )
+            raise
+
+    # Create and run SIP server
+    sip_server = AsyncSIPServer(
+        host=config.sip.domain,
         port=config.sip.port,
-        event_loop=event_loop
+        call_callback=on_incoming_call
     )
 
-    # Initialize SIP
-    logger.info("Initializing SIP endpoint...")
-    sip_endpoint.initialize()
-    logger.info("SIP endpoint initialized successfully")
-
     logger.info(
-        "SIP endpoint ready. Waiting for incoming calls...",
-        ai_vendor=config.ai.vendor,
-        note="Each call will create independent AI WebSocket connection"
+        "SIP server ready - waiting for INVITE requests",
+        host=config.sip.domain,
+        port=config.sip.port,
+        ai_vendor=config.ai.vendor
     )
 
     try:
-        # Keep running - incoming calls will be handled by PJSIPAccount callbacks
-        while True:
-            await asyncio.sleep(1)
+        await sip_server.run()
 
     except KeyboardInterrupt:
         logger.info("Shutting down...")
     finally:
-        sip_endpoint.shutdown()
+        await sip_server.stop()
 
 
 async def main() -> None:

@@ -11,7 +11,6 @@ API Documentation:
 """
 
 import asyncio
-import base64
 import json
 from typing import AsyncIterator, Dict, Optional
 
@@ -121,11 +120,17 @@ class DeepgramAgentClient(AiDuplexBase):
             await self._send_session_config()
 
             # Start background task to receive messages
-            self._receive_task = asyncio.create_task(self._receive_messages())
+            self._receive_task = asyncio.create_task(
+                self._receive_messages(),
+                name="deepgram-receive"
+            )
             self._logger.info("Started background message receiver task")
 
             # Start KeepAlive task to prevent connection timeout
-            self._keepalive_task = asyncio.create_task(self._send_keepalive())
+            self._keepalive_task = asyncio.create_task(
+                self._send_keepalive(),
+                name="deepgram-keepalive"
+            )
             self._logger.info("Started KeepAlive task")
 
             # Emit connected event
@@ -269,7 +274,7 @@ class DeepgramAgentClient(AiDuplexBase):
                 return
 
             # Convert PCM16 → mulaw
-            from app.core.codec import Codec
+            from app.utils.codec import Codec
             mulaw_chunk = Codec.pcm16_to_ulaw(frame_20ms)
 
             # Send raw binary audio (μ-law bytes) directly to Deepgram
@@ -299,7 +304,8 @@ class DeepgramAgentClient(AiDuplexBase):
                 await asyncio.sleep(5.0)
 
         except asyncio.CancelledError:
-            pass
+            self._logger.debug("KeepAlive task cancelled")
+            # Expected during close(), no need to propagate
         except Exception as e:
             self._logger.error("Error in KeepAlive task", error=str(e))
 
@@ -342,7 +348,7 @@ class DeepgramAgentClient(AiDuplexBase):
             audio_data: Binary μ-law audio data from Deepgram
         """
         import time
-        from app.core.codec import Codec
+        from app.utils.codec import Codec
 
         # Mark that we've received first audio - now safe to send user audio
         if not self._received_first_audio:

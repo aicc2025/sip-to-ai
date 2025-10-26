@@ -4,8 +4,8 @@ import pytest
 import pytest_asyncio
 from typing import AsyncGenerator
 
-from app.core.ring_buffer import RingBuffer, StreamBuffer
-from app.ai.mock_duplex import MockDuplexClient
+from app.utils.ring_buffer import RingBuffer, StreamBuffer
+from tests.mock_ai_client import MockDuplexClient
 
 
 @pytest.fixture

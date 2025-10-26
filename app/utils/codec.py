@@ -1,7 +1,7 @@
 """Audio codec for μ-law/A-law to PCM16 conversion."""
 
 import numpy as np
-from typing import Literal, Union
+from typing import Literal
 
 
 class Codec:
