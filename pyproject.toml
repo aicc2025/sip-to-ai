@@ -11,7 +11,6 @@ authors = [
 dependencies = [
     "websockets>=15.0.1",
     "numpy>=2.3.3",
-    "soxr>=1.0.0",
     "structlog>=25.4.0",
     "python-dotenv>=1.1.1",
     "pyyaml>=6.0.2"
@@ -57,13 +56,6 @@ warn_redundant_casts = true
 warn_unused_ignores = true
 warn_no_return = true
 follow_imports = "normal"
-
-[[tool.mypy.overrides]]
-module = [
-    "pjsua2.*",
-    "soxr.*",
-]
-ignore_missing_imports = true
 
 [tool.ruff]
 target-version = "py312"

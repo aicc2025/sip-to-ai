@@ -5,8 +5,8 @@ import time
 import pytest
 import numpy as np
 
-from app.ai.mock_duplex import MockDuplexClient
-from app.sip.audio_adapter import AudioAdapter, CallSession
+from app.bridge import AudioAdapter, CallSession
+from tests.mock_ai_client import MockDuplexClient
 
 
 class TestAudioAdapter:

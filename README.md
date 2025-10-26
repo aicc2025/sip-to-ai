@@ -13,6 +13,8 @@ Simple passthrough bridge: **SIP (G.711 μ-law @ 8kHz)** ↔ **AI voice models**
 
 **Prerequisites:** Python 3.12+, UV package manager
 
+**Pure Python, No External Dependencies:** This project uses a pure Python asyncio implementation of SIP+RTP. No C libraries or compilation required!
+
 1. **Install dependencies:**
    ```bash
    git clone <repository-url>
@@ -20,20 +22,8 @@ Simple passthrough bridge: **SIP (G.711 μ-law @ 8kHz)** ↔ **AI voice models**
    uv venv && source .venv/bin/activate
    uv sync
    ```
-2. **Install PJSUA2** (from local build):  
-   First, build and install PJSIP following the [official build instructions](https://docs.pjsip.org/en/latest/get-started/posix/build_instructions.html).  
-   After completing `make install` to install headers and libraries, install the Python bindings:  
-   ```bash
-   cd <pjproject>/pjsip-apps/src/swig/python
-   uv pip install .
 
-   # Verify installation
-   python -c "import pjsua2 as pj; ep = pj.Endpoint(); ep.libCreate(); print('PJSUA2:', ep.libVersion().full); ep.libDestroy()"
-   ```
-
-
-
-3. **Configure environment:**
+2. **Configure environment:**
    ```bash
    cp .env.example .env
    ```
@@ -62,14 +52,14 @@ Simple passthrough bridge: **SIP (G.711 μ-law @ 8kHz)** ↔ **AI voice models**
    greeting: "Hello! How can I help you today?"
    ```
 
-4. **Run the server:**
+3. **Run the server:**
    ```bash
    uv run python -m app.main
    ```
 
    The server will listen on `SIP_DOMAIN:SIP_PORT` for incoming calls. Each call creates an independent OpenAI Realtime WebSocket connection.
 
-5. **Make a test call:**
+4. **Make a test call:**
    ```bash
    # From FreeSWITCH/Asterisk, dial to bridge IP:port
    # Or use a SIP softphone to call sip:192.168.1.100:6060
@@ -81,13 +71,16 @@ Simple passthrough bridge: **SIP (G.711 μ-law @ 8kHz)** ↔ **AI voice models**
 
 ```mermaid
 graph LR
-    SIP[SIP/PJSUA2<br/>PCM16 @ 8kHz] <--> AA[AudioAdapter<br/>Codec Only]
+    SIP[Pure Asyncio SIP+RTP<br/>G.711 @ 8kHz] <--> AA[AudioAdapter<br/>Codec Only]
     AA <--> AI[AI WebSocket<br/>G.711 μ-law @ 8kHz]
-    
+
 ```
 
 **Design Philosophy**: Minimal client logic. The bridge is a transparent audio pipe:
+- **Pure Python asyncio**: No GIL issues, no C dependencies
 - **Codec conversion only**: PCM16 ↔ G.711 μ-law (same 8kHz, no resampling)
+- **Precise 20ms timing**: Using `asyncio.sleep()` with drift correction
+- **Structured concurrency**: All tasks managed with `asyncio.TaskGroup`
 - **No client-side VAD/barge-in**: AI models handle all voice activity detection
 - **No jitter buffer**: AI services provide pre-buffered audio
 - **Connection management**: WebSocket lifecycle and reconnection

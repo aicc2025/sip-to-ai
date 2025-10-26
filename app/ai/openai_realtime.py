@@ -52,7 +52,7 @@ import websockets
 from websockets.client import WebSocketClientProtocol
 
 from app.ai.duplex_base import AiDuplexBase, AiEvent, AiEventType
-from app.core.codec import Codec
+from app.utils.codec import Codec
 
 
 class OpenAIRealtimeClient(AiDuplexBase):
@@ -143,7 +143,10 @@ class OpenAIRealtimeClient(AiDuplexBase):
             self._session_updated_event.clear()
 
             # Start message handler task first
-            self._message_handler_task = asyncio.create_task(self._message_handler())
+            self._message_handler_task = asyncio.create_task(
+                self._message_handler(),
+                name="openai-message-handler"
+            )
 
             # Wait for session.created from OpenAI
             self._logger.info("Waiting for session.created from OpenAI...")
@@ -190,7 +193,8 @@ class OpenAIRealtimeClient(AiDuplexBase):
             try:
                 await self._message_handler_task
             except asyncio.CancelledError:
-                pass
+                self._logger.debug("Message handler task cancelled")
+                # Expected during close(), no need to propagate
 
         if self._ws:
             await self._ws.close()
