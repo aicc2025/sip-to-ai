@@ -89,42 +89,67 @@ graph LR
 
 ```mermaid
 sequenceDiagram
-    participant PJSUA2
-    participant AudioAdapter
+    participant RTP as RTP Session
+    participant Bridge as Audio Bridge
     participant AI as OpenAI/Deepgram
 
-    Note over PJSUA2,AI: Uplink (SIP → AI)
-    PJSUA2->>AudioAdapter: onFrameReceived(PCM16, 320 bytes)
-    AudioAdapter->>AudioAdapter: PCM16 → G.711 μ-law (160 bytes)
-    AudioAdapter->>AI: WebSocket send(G.711)
+    Note over RTP,AI: Uplink (SIP → AI)
+    RTP->>Bridge: Receive G.711 packet (160 bytes)
+    Bridge->>Bridge: G.711 → PCM16 (320 bytes)
+    Bridge->>AI: WebSocket send(PCM16)
 
-    Note over PJSUA2,AI: Downlink (AI → SIP)
-    AI->>AudioAdapter: WebSocket receive(G.711 chunks)
-    AudioAdapter->>AudioAdapter: Accumulate & split to 320-byte frames
-    AudioAdapter->>AudioAdapter: G.711 → PCM16
-    PJSUA2->>AudioAdapter: onFrameRequested()
-    AudioAdapter->>PJSUA2: return PCM16 (320 bytes)
+    Note over RTP,AI: Downlink (AI → SIP)
+    AI->>Bridge: WebSocket receive(PCM16 chunks)
+    Bridge->>Bridge: Accumulate & split to 320-byte frames
+    Bridge->>Bridge: PCM16 → G.711 (160 bytes)
+    RTP->>Bridge: Request audio frame
+    Bridge->>RTP: Send G.711 packet (160 bytes)
 ```
 
 **Key Points:**
 - **20ms frames**: 320 bytes PCM16 (8kHz) or 160 bytes G.711 μ-law
-- **Thread-safe**: PJSUA2 callbacks → asyncio.Queue → async AI WebSocket
+- **Asyncio-based**: RTP protocol → asyncio.Queue → async AI WebSocket
 - **Variable AI chunks**: Accumulated in buffer, split into fixed 320-byte frames
 - **No padding during streaming**: Incomplete frames kept until next chunk arrives
 
 ### Components
 
-**`AudioAdapter`** (`app/sip/audio_adapter.py`)
-- Codec conversion: PCM16 ↔ G.711 μ-law
-- Accumulation buffer for variable-size AI chunks → fixed 320-byte frames
-- Thread-safe buffers: `asyncio.Queue` for uplink (SIP→AI) and downlink (AI→SIP)
+#### SIP+RTP Stack (`app/sip_async/`)
 
-**`CallSession`** (`app/sip/audio_adapter.py`)
-- Manages three async tasks per call:
-  1. **Uplink**: Read from uplink stream → send to AI
-  2. **AI Receive**: Receive AI chunks → feed to downlink stream
+**`AsyncSIPServer`** (`app/sip_async/async_sip_server.py`)
+- Pure asyncio SIP server listening for INVITE requests
+- UDP datagram protocol for SIP signaling
+- Creates AsyncCall instances for each incoming call
+- Handles SIP messages: INVITE, ACK, BYE with proper RFC 3261 responses
+
+**`RTPSession`** (`app/sip_async/rtp_session.py`)
+- Pure asyncio RTP protocol implementation
+- G.711 μ-law codec (PCMU) support
+- Precise 20ms frame timing with drift correction
+- Bidirectional audio streaming over UDP
+
+**`RTPAudioBridge`** (`app/sip_async/audio_bridge.py`)
+- Bridges RTP session with AudioAdapter
+- Handles G.711 ↔ PCM16 codec conversion
+- Uses asyncio.TaskGroup for structured concurrency
+
+#### Bridge Layer (`app/bridge/`)
+
+**`AudioAdapter`** (`app/bridge/audio_adapter.py`)
+- Audio format adapter for SIP ↔ AI streaming
+- PCM16 passthrough with optional codec conversion
+- Accumulation buffer for variable-size AI chunks → fixed 320-byte frames
+- Thread-safe buffers: `asyncio.Queue` for uplink and downlink
+
+**`CallSession`** (`app/bridge/call_session.py`)
+- Manages AI connection lifecycle for a single call
+- Three async tasks per call:
+  1. **Uplink**: Read from AudioAdapter → send to AI
+  2. **AI Receive**: Receive AI chunks → feed to AudioAdapter
   3. **Health**: Ping AI connection, reconnect on failure
 - Uses `asyncio.TaskGroup` for structured concurrency
+
+#### AI Clients (`app/ai/`)
 
 **`OpenAIRealtimeClient`** (`app/ai/openai_realtime.py`)
 - WebSocket: `wss://api.openai.com/v1/realtime`
@@ -136,10 +161,6 @@ sequenceDiagram
 - WebSocket: `wss://agent.deepgram.com/agent`
 - Audio format: mulaw (same as G.711 μ-law @ 8kHz)
 - Settings: listen model, speak model, LLM model, agent prompt
-
-**`PJSIPMediaPort`** (`app/sip/pjsua2_endpoint.py`)
-- PJSUA2 callbacks: `onFrameReceived()`, `onFrameRequested()`
-- Bridges sync callbacks to async `AudioAdapter`
 
 
 
@@ -187,9 +208,9 @@ Get your API key from [Deepgram Console](https://console.deepgram.com).
 **High Latency:** Verify AI service response times. Client-side is <10ms.
 
 **SIP Connection Failed:**
-- Check firewall/NAT for incoming SIP INVITE
+- Check firewall/NAT for incoming SIP INVITE on UDP port
 - Verify `SIP_DOMAIN` and `SIP_PORT` in `.env`
-- Confirm PJSUA2 installed: `python -c "import pjsua2"`
+- Check logs for SIP protocol errors
 
 **AI Disconnection:**
 - Validate API keys
@@ -199,6 +220,8 @@ Get your API key from [Deepgram Console](https://console.deepgram.com).
 
 ## License
 
-GNU General Public License v2.0 (GPL-2.0)
+Apache License 2.0
 
-This project uses PJSUA2, which is licensed under GPL v2. Therefore, this project is also distributed under GPL v2 to comply with PJSUA2's licensing requirements.
+This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
+
+Pure Python implementation with no GPL dependencies.
