@@ -1,10 +1,10 @@
 [project]
 name = "sip-to-ai"
 version = "0.1.0"
-description = "Bidirectional audio bridge between SIP/PJSUA2 and AI realtime voice services"
+description = "Pure Python asyncio bridge between SIP and AI realtime voice services"
 readme = "README.md"
 requires-python = ">=3.12"
-license = {text = "GPL-2.0"}
+license = {text = "Apache-2.0"}
 authors = [
     {name = "SIP-to-AI Team", email = "team@example.com"}
 ]
