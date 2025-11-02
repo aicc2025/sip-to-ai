@@ -5,7 +5,7 @@
 **SIP-to-AI** — stream RTP audio from **FreeSWITCH / OpenSIPS / Asterisk** directly to **end-to-end realtime voice models**:
 - ✅ **OpenAI Realtime API** (gpt-realtime GA)
 - ✅ **Deepgram Voice Agent**
-- 🔜 **Gemini Live** (coming soon)
+- 🔜 **Gemini Live** (coming soon — launching once the Gemini-Live 2.5 API reaches GA)
 
 Simple passthrough bridge: **SIP (G.711 μ-law @ 8kHz)** ↔ **AI voice models** with native codec support, no resampling needed.
 
