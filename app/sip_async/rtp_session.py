@@ -8,11 +8,19 @@ import asyncio
 import audioop
 import random
 from dataclasses import dataclass
-from typing import AsyncIterator, Optional
+from typing import AsyncIterator, Callable, Optional
 
 import structlog
 
 logger = structlog.get_logger(__name__)
+
+
+class PortBindError(Exception):
+    """Raised when RTP port binding fails (port already in use)."""
+    def __init__(self, port: int, original_error: Exception):
+        self.port = port
+        self.original_error = original_error
+        super().__init__(f"Failed to bind RTP port {port}: {original_error}")
 
 
 @dataclass
@@ -237,6 +245,7 @@ class RTPSession:
         self.ssrc = random.randint(0, 0xFFFFFFFF)
 
         self.transport: Optional[asyncio.DatagramTransport] = None
+        self._transport_lock = asyncio.Lock()
         self._running = False
 
         # Statistics
@@ -244,14 +253,41 @@ class RTPSession:
         self._frames_received = 0
         self._silence_frames = 0
 
+    def update_port(self, new_port: int) -> None:
+        """Update local RTP port (before start).
+
+        Args:
+            new_port: New RTP port number
+        """
+        if self._running:
+            raise RuntimeError("Cannot update port while session is running")
+        self.local_port = new_port
+
     async def start(self) -> None:
-        """Start RTP session (create UDP endpoint)."""
+        """Start RTP session (create UDP endpoint).
+
+        Raises:
+            PortBindError: If port is already in use
+        """
         loop = asyncio.get_running_loop()
 
-        transport, protocol = await loop.create_datagram_endpoint(
-            lambda: RTPProtocol(self),
-            local_addr=('0.0.0.0', self.local_port)
-        )
+        try:
+            transport, protocol = await loop.create_datagram_endpoint(
+                lambda: RTPProtocol(self),
+                local_addr=('0.0.0.0', self.local_port)
+            )
+        except OSError as e:
+            # Port already in use or other bind error
+            logger.error(
+                "Failed to bind RTP port",
+                port=self.local_port,
+                error=str(e)
+            )
+            raise PortBindError(self.local_port, e) from e
+
+        # Set transport with lock protection
+        async with self._transport_lock:
+            self.transport = transport
 
         self._running = True
         logger.info(
@@ -343,20 +379,20 @@ class RTPSession:
                 pt=self.config.payload_type
             )
 
-            # Use local reference to avoid TOCTOU race condition
-            transport = self.transport
-            if transport:
-                try:
-                    transport.sendto(packet, self.remote_addr)
-                    self._frames_sent += 1
-                except (AttributeError, OSError) as e:
-                    # Transport closed during send - stop gracefully
-                    logger.debug(
-                        "Transport closed during send",
-                        error=str(e),
-                        local_port=self.local_port
-                    )
-                    break
+            # Send with lock protection (thread-safe)
+            async with self._transport_lock:
+                if self.transport:
+                    try:
+                        self.transport.sendto(packet, self.remote_addr)
+                        self._frames_sent += 1
+                    except (AttributeError, OSError) as e:
+                        # Transport closed during send - stop gracefully
+                        logger.debug(
+                            "Transport closed during send",
+                            error=str(e),
+                            local_port=self.local_port
+                        )
+                        break
 
             # 4. Update RTP state
             self.sequence_num = (self.sequence_num + 1) % 65536
@@ -420,17 +456,18 @@ class RTPSession:
         await self.tx_queue.put(pcm_data)
 
     async def stop(self) -> None:
-        """Stop RTP session."""
+        """Stop RTP session (thread-safe)."""
         self._running = False
 
-        # Close and clear transport
-        if self.transport:
-            try:
-                self.transport.close()
-            except Exception as e:
-                logger.debug("Error closing transport", error=str(e))
-            finally:
-                self.transport = None
+        # Close and clear transport with lock protection
+        async with self._transport_lock:
+            if self.transport:
+                try:
+                    self.transport.close()
+                except Exception as e:
+                    logger.debug("Error closing transport", error=str(e))
+                finally:
+                    self.transport = None
 
         logger.info(
             "RTP session stopped",

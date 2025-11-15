@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Optional
 import structlog
 
 from app.sip_async.audio_bridge import RTPAudioBridge
-from app.sip_async.rtp_session import RTPSession
+from app.sip_async.rtp_session import PortBindError, RTPSession
 from app.sip_async.sdp import build_sdp, extract_remote_rtp_info, parse_sdp
 from app.sip_async.sip_protocol import SIPDialog, SIPMessage, SIPMethod
 
@@ -27,7 +27,8 @@ class AsyncCall:
         self,
         invite: SIPMessage,
         sip_server: 'AsyncSIPServer',
-        local_ip: str
+        local_ip: str,
+        local_rtp_port: int
     ):
         """Initialize call from INVITE request.
 
@@ -35,10 +36,12 @@ class AsyncCall:
             invite: SIP INVITE message
             sip_server: Parent SIP server
             local_ip: Local IP address for SDP
+            local_rtp_port: Allocated RTP port
         """
         self.invite = invite
         self.sip = sip_server
         self.local_ip = local_ip
+        self.local_rtp_port = local_rtp_port
 
         # Parse SDP from INVITE
         sdp = parse_sdp(invite.body)
@@ -48,9 +51,6 @@ class AsyncCall:
             raise ValueError("Cannot extract RTP info from INVITE SDP")
 
         self.remote_rtp_addr = (remote_ip, remote_port)
-
-        # Allocate local RTP port
-        self.local_rtp_port = self.sip.allocate_rtp_port()
 
         # Create SIP dialog
         local_uri = f"{self.local_ip}:{self.sip.port}"
@@ -168,7 +168,10 @@ class AsyncCall:
         return '\r\n'.join(lines).encode('utf-8')
 
     async def run(self) -> None:
-        """Run call with TaskGroup (manages all call tasks)."""
+        """Run call with TaskGroup (manages all call tasks).
+
+        Includes retry logic for RTP port binding failures.
+        """
         if not self.rtp_session or not self.audio_bridge or not self.call_session:
             raise RuntimeError("Call not fully setup - call setup() first")
 
@@ -176,48 +179,96 @@ class AsyncCall:
 
         logger.info("Call starting", call_id=self.call_id)
 
-        try:
-            async with asyncio.TaskGroup() as tg:
-                # RTP session
-                tg.create_task(
-                    self.rtp_session.run(),
-                    name=f"rtp-{self.call_id[:8]}"
-                )
+        # Retry port binding up to 3 times
+        max_retries = 3
+        should_continue = True
 
-                # Audio bridge
-                tg.create_task(
-                    self.audio_bridge.run(),
-                    name=f"bridge-{self.call_id[:8]}"
-                )
+        for attempt in range(max_retries):
+            if not should_continue:
+                break
 
-                # AI session
-                self._session_task = tg.create_task(
-                    self.call_session.start(),
-                    name=f"session-{self.call_id[:8]}"
-                )
+            try:
+                async with asyncio.TaskGroup() as tg:
+                    # RTP session
+                    tg.create_task(
+                        self.rtp_session.run(),
+                        name=f"rtp-{self.call_id[:8]}"
+                    )
 
-                logger.info("Call TaskGroup started", call_id=self.call_id)
+                    # Audio bridge
+                    tg.create_task(
+                        self.audio_bridge.run(),
+                        name=f"bridge-{self.call_id[:8]}"
+                    )
 
-        except* asyncio.CancelledError:
-            # Normal cancellation during shutdown
-            logger.debug("Call tasks cancelled (normal shutdown)", call_id=self.call_id)
+                    # AI session
+                    self._session_task = tg.create_task(
+                        self.call_session.start(),
+                        name=f"session-{self.call_id[:8]}"
+                    )
 
-        except* Exception as eg:
-            # Unexpected exceptions
-            logger.error(
-                "Call TaskGroup exceptions",
-                call_id=self.call_id,
-                count=len(eg.exceptions)
-            )
-            for exc in eg.exceptions:
-                logger.error(
-                    f"Exception: {type(exc).__name__}: {exc}",
+                    logger.info("Call TaskGroup started", call_id=self.call_id)
+
+                # Tasks completed normally
+                should_continue = False
+
+            except* PortBindError as eg:
+                # RTP port binding failed
+                port_error = eg.exceptions[0]
+                logger.warning(
+                    "RTP port bind failed, retrying with new port",
                     call_id=self.call_id,
-                    exc_info=exc
+                    failed_port=port_error.port,
+                    attempt=attempt + 1,
+                    max_retries=max_retries
                 )
-        finally:
-            self._running = False
-            logger.info("Call ended", call_id=self.call_id)
+
+                if attempt < max_retries - 1:
+                    # Release failed port and allocate new one
+                    await self.sip.release_rtp_port(port_error.port)
+                    new_port = await self.sip.allocate_rtp_port()
+
+                    # Update RTP session with new port
+                    self.rtp_session.update_port(new_port)
+                    self.local_rtp_port = new_port
+
+                    logger.info(
+                        "Retrying with new RTP port",
+                        call_id=self.call_id,
+                        new_port=new_port
+                    )
+                else:
+                    # Max retries exceeded
+                    logger.error(
+                        "Max RTP port bind retries exceeded",
+                        call_id=self.call_id,
+                        max_retries=max_retries
+                    )
+                    should_continue = False
+                    raise
+
+            except* asyncio.CancelledError:
+                # Normal cancellation during shutdown
+                logger.debug("Call tasks cancelled (normal shutdown)", call_id=self.call_id)
+                should_continue = False
+
+            except* Exception as eg:
+                # Unexpected exceptions
+                logger.error(
+                    "Call TaskGroup exceptions",
+                    call_id=self.call_id,
+                    count=len(eg.exceptions)
+                )
+                for exc in eg.exceptions:
+                    logger.error(
+                        f"Exception: {type(exc).__name__}: {exc}",
+                        call_id=self.call_id,
+                        exc_info=exc
+                    )
+                should_continue = False
+
+        self._running = False
+        logger.info("Call ended", call_id=self.call_id)
 
     async def hangup(self) -> None:
         """Hangup call (send BYE)."""

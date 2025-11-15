@@ -44,11 +44,13 @@ class AsyncSIPServer:
 
         # Active calls
         self.active_calls: dict[str, AsyncCall] = {}
+        self._calls_lock = asyncio.Lock()
 
         # RTP port pool (10000-20000)
         self._rtp_port_min = 10000
         self._rtp_port_max = 20000
         self._allocated_ports: set[int] = set()
+        self._port_lock = asyncio.Lock()
 
         self._running = False
 
@@ -82,22 +84,29 @@ class AsyncSIPServer:
             while self._running:
                 await asyncio.sleep(1)
 
-                # Clean up completed calls
-                ended_calls = [
-                    call_id for call_id, call in self.active_calls.items()
-                    if not call._running
-                ]
+                # Clean up completed calls (thread-safe)
+                async with self._calls_lock:
+                    # Create snapshot to avoid dict modification during iteration
+                    ended_calls = [
+                        call_id for call_id, call in list(self.active_calls.items())
+                        if not call._running
+                    ]
 
-                for call_id in ended_calls:
-                    call = self.active_calls.pop(call_id)
-                    # Free RTP port
-                    if call.local_rtp_port in self._allocated_ports:
-                        self._allocated_ports.remove(call.local_rtp_port)
-                    logger.info(
-                        "Call removed from active calls",
-                        call_id=call_id,
-                        active_count=len(self.active_calls)
-                    )
+                    # Collect calls to release ports
+                    calls_to_release = []
+                    for call_id in ended_calls:
+                        call = self.active_calls.pop(call_id)
+                        calls_to_release.append(call)
+
+                        logger.info(
+                            "Call removed from active calls",
+                            call_id=call_id,
+                            active_count=len(self.active_calls)
+                        )
+
+                # Free RTP ports outside the calls_lock (avoid nested locks)
+                for call in calls_to_release:
+                    await self.release_rtp_port(call.local_rtp_port)
 
         finally:
             await self.stop()
@@ -115,26 +124,37 @@ class AsyncSIPServer:
 
         logger.info("SIP server stopped")
 
-    def allocate_rtp_port(self) -> int:
-        """Allocate RTP port from pool.
+    async def allocate_rtp_port(self) -> int:
+        """Allocate RTP port from pool (thread-safe).
 
         Returns:
             Available RTP port number
         """
-        # Try random ports first
-        for _ in range(100):
-            port = random.randint(self._rtp_port_min, self._rtp_port_max)
-            if port not in self._allocated_ports:
-                self._allocated_ports.add(port)
-                return port
+        async with self._port_lock:
+            # Try random ports first
+            for _ in range(100):
+                port = random.randint(self._rtp_port_min, self._rtp_port_max)
+                if port not in self._allocated_ports:
+                    self._allocated_ports.add(port)
+                    return port
 
-        # Fallback: linear search
-        for port in range(self._rtp_port_min, self._rtp_port_max):
-            if port not in self._allocated_ports:
-                self._allocated_ports.add(port)
-                return port
+            # Fallback: linear search
+            for port in range(self._rtp_port_min, self._rtp_port_max):
+                if port not in self._allocated_ports:
+                    self._allocated_ports.add(port)
+                    return port
 
-        raise RuntimeError("No RTP ports available")
+            raise RuntimeError("No RTP ports available")
+
+    async def release_rtp_port(self, port: int) -> None:
+        """Release RTP port back to pool (thread-safe).
+
+        Args:
+            port: RTP port to release
+        """
+        async with self._port_lock:
+            if port in self._allocated_ports:
+                self._allocated_ports.remove(port)
 
     async def handle_message(self, msg: SIPMessage, addr: tuple) -> None:
         """Handle incoming SIP message.
@@ -194,16 +214,22 @@ class AsyncSIPServer:
             from_uri=invite.headers.get("From", {}).get("address")
         )
 
+        local_rtp_port = None
         try:
+            # Allocate RTP port (thread-safe)
+            local_rtp_port = await self.allocate_rtp_port()
+
             # Create call
             call = AsyncCall(
                 invite=invite,
                 sip_server=self,
-                local_ip=self.host
+                local_ip=self.host,
+                local_rtp_port=local_rtp_port
             )
 
-            # Store call
-            self.active_calls[call_id] = call
+            # Store call (thread-safe)
+            async with self._calls_lock:
+                self.active_calls[call_id] = call
 
             # Accept call (send 200 OK)
             await call.accept()
@@ -224,6 +250,10 @@ class AsyncSIPServer:
                 error=str(e),
                 exc_info=True
             )
+
+            # Release port if allocated
+            if local_rtp_port is not None:
+                await self.release_rtp_port(local_rtp_port)
 
             # TODO: Send 500 Internal Server Error
 
@@ -336,8 +366,10 @@ class AsyncSIPServer:
 
         logger.info("Received BYE", call_id=call_id)
 
-        # Find and stop call
-        call = self.active_calls.get(call_id)
+        # Find and stop call (thread-safe)
+        async with self._calls_lock:
+            call = self.active_calls.get(call_id)
+
         if call:
             await call.stop()
 
