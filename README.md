@@ -5,7 +5,7 @@
 **SIP-to-AI** — stream RTP audio from **FreeSWITCH / OpenSIPS / Asterisk** directly to **end-to-end realtime voice models**:
 - ✅ **OpenAI Realtime API** (gpt-realtime GA)
 - ✅ **Deepgram Voice Agent**
-- ✅ **Gemini Live** (Gemini 2.0 Flash)
+- ✅ **Gemini Live** (Gemini 2.5 Flash)
 
 Simple passthrough bridge: **SIP (G.711 μ-law @ 8kHz)** ↔ **AI voice models**. OpenAI and Deepgram support native G.711, Gemini requires PCM16 resampling (8kHz ↔ 16kHz/24kHz).
 
@@ -202,7 +202,7 @@ Set `AI_VENDOR=gemini` in `.env`:
 AI_VENDOR=gemini
 GEMINI_API_KEY=your-key-here
 AGENT_PROMPT_FILE=agent_prompt.yaml
-GEMINI_MODEL=gemini-2.0-flash-exp
+GEMINI_MODEL=gemini-2.5-flash-native-audio-preview-12-2025
 GEMINI_VOICE=Puck
 ```
 

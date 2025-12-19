@@ -110,7 +110,7 @@ class AIConfig:
 
     # Gemini Live Configuration
     gemini_api_key: str = ""
-    gemini_model: str = "gemini-2.0-flash-exp"  # Model with Live API support
+    gemini_model: str = "gemini-2.5-flash-native-audio-preview-12-2025"  # Model with Live API support
     gemini_voice: str = "Puck"  # Voice: Puck, Charon, Kore, Fenrir, Aoede
 
 
@@ -165,7 +165,7 @@ class Config:
             deepgram_speak_model=os.getenv("DEEPGRAM_SPEAK_MODEL", "aura-asteria-en"),
             deepgram_llm_model=os.getenv("DEEPGRAM_LLM_MODEL", "gpt-4o-mini"),
             gemini_api_key=os.getenv("GEMINI_API_KEY", ""),
-            gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.0-flash-exp"),
+            gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash-native-audio-preview-12-2025"),
             gemini_voice=os.getenv("GEMINI_VOICE", "Puck"),
         )
 

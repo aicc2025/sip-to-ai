@@ -1,6 +1,6 @@
 """Gemini Live API adapter.
 
-Bidirectional audio streaming with Google's Gemini 2.0 Flash model:
+Bidirectional audio streaming with Google's Gemini 2.5 Flash model:
 
 1. WebSocket connection to Gemini Live API
 2. Session configuration with voice settings
@@ -43,7 +43,7 @@ class GeminiLiveClient(AiDuplexBase):
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model: str = "gemini-2.0-flash-exp",
+        model: str = "gemini-2.5-flash-native-audio-preview-12-2025",
         voice: str = "Puck",
         instructions: str = "You are a helpful assistant.",
         greeting: Optional[str] = None
