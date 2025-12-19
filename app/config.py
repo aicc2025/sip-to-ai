@@ -87,11 +87,11 @@ class AudioConfig:
 class AIConfig:
     """AI service configuration.
 
-    Note: VAD, barge-in, and turn-taking are handled by AI services (OpenAI/Deepgram).
+    Note: VAD, barge-in, and turn-taking are handled by AI services (OpenAI/Deepgram/Gemini).
     No client-side configuration needed.
     """
 
-    vendor: Literal["openai", "deepgram"] = "openai"
+    vendor: Literal["openai", "deepgram", "gemini"] = "openai"
 
     # Agent Prompt Configuration (shared across vendors)
     # NOTE: Path can be relative (resolved from project root) or absolute
@@ -107,6 +107,11 @@ class AIConfig:
     deepgram_listen_model: str = "nova-2"  # STT model (nova-2, nova-3)
     deepgram_speak_model: str = "aura-asteria-en"  # TTS voice
     deepgram_llm_model: str = "gpt-4o-mini"  # LLM model for agent
+
+    # Gemini Live Configuration
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-2.0-flash-exp"  # Model with Live API support
+    gemini_voice: str = "Puck"  # Voice: Puck, Charon, Kore, Fenrir, Aoede
 
 
 @dataclass(frozen=True)
@@ -146,7 +151,7 @@ class Config:
         )
 
         ai_vendor = os.getenv("AI_VENDOR", "mock").lower()
-        if ai_vendor not in ["mock", "openai", "deepgram"]:
+        if ai_vendor not in ["mock", "openai", "deepgram", "gemini"]:
             ai_vendor = "mock"
 
         self.ai = AIConfig(
@@ -159,6 +164,9 @@ class Config:
             deepgram_listen_model=os.getenv("DEEPGRAM_LISTEN_MODEL", "nova-2"),
             deepgram_speak_model=os.getenv("DEEPGRAM_SPEAK_MODEL", "aura-asteria-en"),
             deepgram_llm_model=os.getenv("DEEPGRAM_LLM_MODEL", "gpt-4o-mini"),
+            gemini_api_key=os.getenv("GEMINI_API_KEY", ""),
+            gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.0-flash-exp"),
+            gemini_voice=os.getenv("GEMINI_VOICE", "Puck"),
         )
 
         self.sip = SIPConfig(

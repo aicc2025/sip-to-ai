@@ -12,6 +12,7 @@ from pathlib import Path
 
 from app.ai.deepgram_agent import DeepgramAgentClient
 from app.ai.duplex_base import AiDuplexClient
+from app.ai.gemini_live import GeminiLiveClient
 from app.ai.openai_realtime import OpenAIRealtimeClient
 from app.bridge import AudioAdapter, CallSession
 from app.config import config
@@ -171,6 +172,30 @@ def create_ai_client() -> AiDuplexClient:
             listen_model=config.ai.deepgram_listen_model,
             speak_model=config.ai.deepgram_speak_model,
             llm_model=config.ai.deepgram_llm_model,
+            instructions=instructions,
+            greeting=greeting
+        )
+
+    elif vendor == "gemini":
+        if not config.ai.gemini_api_key:
+            raise ValueError("Gemini API key not configured")
+
+        # Load agent configuration (optional for Gemini)
+        instructions, greeting = _load_agent_config(logger)
+
+        logger.info(
+            "Using Gemini Live client",
+            model=config.ai.gemini_model,
+            voice=config.ai.gemini_voice,
+            has_greeting=greeting is not None,
+            instructions_length=len(instructions),
+            greeting_preview=greeting[:50] if greeting else None
+        )
+
+        return GeminiLiveClient(
+            api_key=config.ai.gemini_api_key,
+            model=config.ai.gemini_model,
+            voice=config.ai.gemini_voice,
             instructions=instructions,
             greeting=greeting
         )

@@ -267,3 +267,44 @@ def convert_pcm16_to_g711(data: bytes, encoding: Literal["ulaw", "alaw"]) -> byt
         return Codec.pcm16_to_alaw(data)
     else:
         raise ValueError(f"Unsupported encoding: {encoding}")
+
+
+def resample_pcm16(data: bytes, from_rate: int, to_rate: int) -> bytes:
+    """Resample PCM16 audio using linear interpolation.
+
+    Args:
+        data: PCM16 audio data (little-endian)
+        from_rate: Source sample rate in Hz
+        to_rate: Target sample rate in Hz
+
+    Returns:
+        Resampled PCM16 audio data
+
+    Examples:
+        # Upsample from 8kHz to 16kHz (for Gemini Live input)
+        pcm16_16k = resample_pcm16(pcm16_8k, 8000, 16000)
+
+        # Downsample from 24kHz to 8kHz (for Gemini Live output)
+        pcm16_8k = resample_pcm16(pcm16_24k, 24000, 8000)
+    """
+    if from_rate == to_rate:
+        return data
+
+    # Convert to numpy array
+    samples = np.frombuffer(data, dtype=np.int16).astype(np.float32)
+
+    # Calculate resampling ratio
+    ratio = to_rate / from_rate
+    new_length = int(len(samples) * ratio)
+
+    if new_length == 0:
+        return b""
+
+    # Linear interpolation for resampling
+    old_indices = np.arange(len(samples))
+    new_indices = np.linspace(0, len(samples) - 1, new_length)
+    resampled = np.interp(new_indices, old_indices, samples)
+
+    # Convert back to int16
+    resampled = np.clip(resampled, -32768, 32767).astype(np.int16)
+    return resampled.tobytes()

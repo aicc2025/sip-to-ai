@@ -5,9 +5,9 @@
 **SIP-to-AI** — stream RTP audio from **FreeSWITCH / OpenSIPS / Asterisk** directly to **end-to-end realtime voice models**:
 - ✅ **OpenAI Realtime API** (gpt-realtime GA)
 - ✅ **Deepgram Voice Agent**
-- 🔜 **Gemini Live** (coming soon — launching once the Gemini-Live 2.5 API reaches GA)
+- ✅ **Gemini Live** (Gemini 2.0 Flash)
 
-Simple passthrough bridge: **SIP (G.711 μ-law @ 8kHz)** ↔ **AI voice models** with native codec support, no resampling needed.
+Simple passthrough bridge: **SIP (G.711 μ-law @ 8kHz)** ↔ **AI voice models**. OpenAI and Deepgram support native G.711, Gemini requires PCM16 resampling (8kHz ↔ 16kHz/24kHz).
 
 ## Quick Start (OpenAI Realtime)
 
@@ -71,14 +71,14 @@ Simple passthrough bridge: **SIP (G.711 μ-law @ 8kHz)** ↔ **AI voice models**
 
 ```mermaid
 graph LR
-    SIP[Pure Asyncio SIP+RTP<br/>G.711 @ 8kHz] <--> AA[AudioAdapter<br/>Codec Only]
-    AA <--> AI[AI WebSocket<br/>G.711 μ-law @ 8kHz]
+    SIP[Pure Asyncio SIP+RTP<br/>G.711 @ 8kHz] <--> AA[AudioAdapter<br/>Codec/Resample]
+    AA <--> AI[AI WebSocket<br/>OpenAI/Deepgram/Gemini]
 
 ```
 
 **Design Philosophy**: Minimal client logic. The bridge is a transparent audio pipe:
 - **Pure Python asyncio**: No GIL issues, no C dependencies
-- **Codec conversion only**: PCM16 ↔ G.711 μ-law (same 8kHz, no resampling)
+- **Codec conversion only**: PCM16 ↔ G.711 μ-law (OpenAI/Deepgram: same 8kHz, no resampling; Gemini: 8kHz ↔ 16kHz/24kHz resampling)
 - **Precise 20ms timing**: Using `asyncio.sleep()` with drift correction
 - **Structured concurrency**: All tasks managed with `asyncio.TaskGroup`
 - **No client-side VAD/barge-in**: AI models handle all voice activity detection
@@ -91,7 +91,7 @@ graph LR
 sequenceDiagram
     participant RTP as RTP Session
     participant Bridge as Audio Bridge
-    participant AI as OpenAI/Deepgram
+    participant AI as AI Service
 
     Note over RTP,AI: Uplink (SIP → AI)
     RTP->>Bridge: Receive G.711 packet (160 bytes)
@@ -162,6 +162,12 @@ sequenceDiagram
 - Audio format: mulaw (same as G.711 μ-law @ 8kHz)
 - Settings: listen model, speak model, LLM model, agent prompt
 
+**`GeminiLiveClient`** (`app/ai/gemini_live.py`)
+- WebSocket: `wss://generativelanguage.googleapis.com/ws/...BidiGenerateContent`
+- Audio format: PCM16 (input @ 16kHz, output @ 24kHz)
+- Resampling: 8kHz SIP ↔ 16kHz/24kHz Gemini (handled internally)
+- Settings: model, voice, system instructions
+
 
 
 ## Deepgram Voice Agent Setup
@@ -188,6 +194,25 @@ greeting: "Hello! How can I help you today?"
 Get your API key from [Deepgram Console](https://console.deepgram.com).
 
 
+## Gemini Live Setup
+
+Set `AI_VENDOR=gemini` in `.env`:
+
+```bash
+AI_VENDOR=gemini
+GEMINI_API_KEY=your-key-here
+AGENT_PROMPT_FILE=agent_prompt.yaml
+GEMINI_MODEL=gemini-2.0-flash-exp
+GEMINI_VOICE=Puck
+```
+
+Available voices: `Puck`, `Charon`, `Kore`, `Fenrir`, `Aoede`
+
+Get your API key from [Google AI Studio](https://aistudio.google.com/apikey).
+
+**Note:** Gemini Live uses PCM16 audio (16kHz input, 24kHz output), so the bridge performs resampling from/to 8kHz SIP audio. This adds minimal latency (<5ms).
+
+
 ## Performance
 
 **Latency:**
@@ -196,7 +221,8 @@ Get your API key from [Deepgram Console](https://console.deepgram.com).
 - Total: ~100-300ms (AI processing dominates)
 - 
 **Why Fast?**
-- No resampling (8kHz throughout)
+- OpenAI/Deepgram: No resampling (8kHz throughout)
+- Gemini: Minimal resampling overhead (<5ms)
 - No client-side VAD/barge-in
 - No jitter buffer
 - Just codec conversion
