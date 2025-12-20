@@ -229,7 +229,7 @@ class CallSession:
                             reconnect_attempts += 1
                         else:
                             self._logger.error("Max reconnection attempts reached, stopping session")
-                            await self.stop()
+                            asyncio.create_task(self.stop())
                             break
                     else:
                         reconnect_attempts = 0  # Reset on success

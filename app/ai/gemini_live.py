@@ -143,6 +143,10 @@ class GeminiLiveClient(AiDuplexBase):
 
         self._connected = False
         self._stop_event.set()
+        try:
+            self._audio_queue.put_nowait(b"")
+        except asyncio.QueueFull:
+            pass
 
         if self._message_handler_task:
             self._message_handler_task.cancel()
@@ -208,6 +212,8 @@ class GeminiLiveClient(AiDuplexBase):
         while self._connected:
             try:
                 chunk = await self._audio_queue.get()
+                if not self._connected and chunk == b"":
+                    break
                 yield chunk
             except Exception as e:
                 self._logger.error("Audio stream error", error=str(e))
@@ -256,9 +262,10 @@ class GeminiLiveClient(AiDuplexBase):
             return False
 
         try:
-            await self._ws.ping()
+            pong_waiter = await self._ws.ping()
+            await asyncio.wait_for(pong_waiter, timeout=5.0)
             return True
-        except Exception:
+        except (asyncio.TimeoutError, Exception):
             return False
 
     async def reconnect(self) -> None:
@@ -336,12 +343,20 @@ class GeminiLiveClient(AiDuplexBase):
 
             except websockets.exceptions.ConnectionClosed:
                 self._logger.warning("WebSocket connection closed")
-                await self._event_queue.put(
-                    AiEvent(
-                        type=AiEventType.DISCONNECTED,
-                        timestamp=time.time()
-                    )
+                self._connected = False
+                self._stop_event.set()
+                event = AiEvent(
+                    type=AiEventType.DISCONNECTED,
+                    timestamp=time.time()
                 )
+                try:
+                    self._event_queue.put_nowait(event)
+                except asyncio.QueueFull:
+                    self._logger.debug("Event queue full, dropping disconnect event")
+                try:
+                    self._audio_queue.put_nowait(b"")
+                except asyncio.QueueFull:
+                    pass
                 break
             except json.JSONDecodeError as e:
                 self._logger.error("Failed to decode message", error=str(e))

@@ -187,6 +187,10 @@ class OpenAIRealtimeClient(AiDuplexBase):
 
         self._connected = False
         self._stop_event.set()
+        try:
+            self._audio_queue.put_nowait(b"")
+        except asyncio.QueueFull:
+            pass
 
         if self._message_handler_task:
             self._message_handler_task.cancel()
@@ -253,6 +257,8 @@ class OpenAIRealtimeClient(AiDuplexBase):
         while self._connected:
             try:
                 chunk = await self._audio_queue.get()
+                if not self._connected and chunk == b"":
+                    break
                 yield chunk
             except Exception as e:
                 self._logger.error("Audio stream error", error=str(e))
@@ -299,10 +305,10 @@ class OpenAIRealtimeClient(AiDuplexBase):
             return False
 
         try:
-            # Send ping
-            await self._ws.ping()
+            pong_waiter = await self._ws.ping()
+            await asyncio.wait_for(pong_waiter, timeout=5.0)
             return True
-        except Exception:
+        except (asyncio.TimeoutError, Exception):
             return False
 
     async def reconnect(self) -> None:
@@ -395,12 +401,20 @@ class OpenAIRealtimeClient(AiDuplexBase):
 
             except websockets.exceptions.ConnectionClosed:
                 self._logger.warning("WebSocket connection closed")
-                await self._event_queue.put(
-                    AiEvent(
-                        type=AiEventType.DISCONNECTED,
-                        timestamp=time.time()
-                    )
+                self._connected = False
+                self._stop_event.set()
+                event = AiEvent(
+                    type=AiEventType.DISCONNECTED,
+                    timestamp=time.time()
                 )
+                try:
+                    self._event_queue.put_nowait(event)
+                except asyncio.QueueFull:
+                    self._logger.debug("Event queue full, dropping disconnect event")
+                try:
+                    self._audio_queue.put_nowait(b"")
+                except asyncio.QueueFull:
+                    pass
                 break
             except Exception as e:
                 self._logger.error("Message handler error", error=str(e))
@@ -461,40 +475,6 @@ class OpenAIRealtimeClient(AiDuplexBase):
                     timestamp=time.time()
                 )
             )
-
-        elif msg_type == "response.audio.delta":
-            # Audio chunk from AI (base64 encoded G.711 μ-law @ 8kHz)
-            audio_base64 = data.get("delta")
-            if audio_base64:
-                # Decode base64 to get G.711 μ-law bytes @ 8kHz
-                g711_ulaw = base64.b64decode(audio_base64)
-
-                # Convert G.711 μ-law → PCM16 for PJSUA2
-                pcm16_8k = Codec.ulaw_to_pcm16(g711_ulaw)
-
-                # Log chunk sizes for debugging
-                chunk_size_g711 = len(g711_ulaw)
-                chunk_size_pcm16 = len(pcm16_8k)
-                duration_ms = (chunk_size_g711 / 8000) * 1000  # G.711 @ 8kHz: 1 byte = 1 sample
-
-                # Put PCM16 @ 8kHz into queue (AudioAdapter will split into frames)
-                await self._audio_queue.put(pcm16_8k)
-                self._audio_chunks_received += 1
-                if self._audio_chunks_received % 10 == 0:
-                    self._logger.info(
-                        f"📢 Received {self._audio_chunks_received} audio chunks from OpenAI",
-                        g711_ulaw=f"{chunk_size_g711}B",
-                        pcm16_8k=f"{chunk_size_pcm16}B",
-                        duration=f"{duration_ms:.1f}ms"
-                    )
-                elif self._audio_chunks_received <= 5:
-                    # Log first 5 chunks in detail
-                    self._logger.info(
-                        f"📢 Chunk #{self._audio_chunks_received}",
-                        g711_ulaw=f"{chunk_size_g711}B",
-                        pcm16_8k=f"{chunk_size_pcm16}B",
-                        duration=f"{duration_ms:.1f}ms"
-                    )
 
         elif msg_type == "conversation.item.input_audio_transcription.delta":
             # Incremental transcription results
@@ -587,4 +567,3 @@ class OpenAIRealtimeClient(AiDuplexBase):
         else:
             # Log unhandled events for debugging
             self._logger.debug(f"Unhandled event: {msg_type}", data=data)
-

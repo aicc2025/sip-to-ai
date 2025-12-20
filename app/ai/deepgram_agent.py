@@ -209,6 +209,10 @@ class DeepgramAgentClient(AiDuplexBase):
             return
 
         self._connected = False
+        try:
+            self._audio_queue.put_nowait(b"")
+        except asyncio.QueueFull:
+            pass
 
         try:
             self._logger.info("Disconnecting from Deepgram")
@@ -325,10 +329,19 @@ class DeepgramAgentClient(AiDuplexBase):
 
         except websockets.exceptions.ConnectionClosed:
             self._logger.info("Deepgram connection closed")
-            await self._event_queue.put(AiEvent(
+            self._connected = False
+            event = AiEvent(
                 type=AiEventType.DISCONNECTED,
                 data={"status": "disconnected"}
-            ))
+            )
+            try:
+                self._event_queue.put_nowait(event)
+            except asyncio.QueueFull:
+                self._logger.debug("Event queue full, dropping disconnect event")
+            try:
+                self._audio_queue.put_nowait(b"")
+            except asyncio.QueueFull:
+                pass
         except Exception as e:
             self._logger.error("Error receiving messages", error=str(e))
             await self._event_queue.put(AiEvent(
@@ -434,6 +447,8 @@ class DeepgramAgentClient(AiDuplexBase):
         while self._connected:
             try:
                 chunk = await self._audio_queue.get()
+                if not self._connected and chunk == b"":
+                    break
                 yield chunk
             except Exception as e:
                 self._logger.error("Audio stream error", error=str(e))
@@ -480,10 +495,10 @@ class DeepgramAgentClient(AiDuplexBase):
             return False
 
         try:
-            # Send ping
-            await self._ws.ping()
+            pong_waiter = await self._ws.ping()
+            await asyncio.wait_for(pong_waiter, timeout=5.0)
             return True
-        except Exception:
+        except (asyncio.TimeoutError, Exception):
             return False
 
     async def reconnect(self) -> None:
