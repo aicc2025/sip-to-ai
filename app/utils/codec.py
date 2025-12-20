@@ -293,6 +293,19 @@ def resample_pcm16(data: bytes, from_rate: int, to_rate: int) -> bytes:
     # Convert to numpy array
     samples = np.frombuffer(data, dtype=np.int16).astype(np.float32)
 
+    # Apply a simple low-pass filter before downsampling to reduce aliasing.
+    if to_rate < from_rate and len(samples) > 0:
+        cutoff_hz = 0.45 * to_rate
+        nyquist = from_rate / 2.0
+        norm_cutoff = cutoff_hz / nyquist
+        taps = 31
+        mid = (taps - 1) / 2.0
+        n = np.arange(taps) - mid
+        h = np.sinc(norm_cutoff * n)
+        h *= np.hamming(taps)
+        h /= np.sum(h)
+        samples = np.convolve(samples, h, mode="same")
+
     # Calculate resampling ratio
     ratio = to_rate / from_rate
     new_length = int(len(samples) * ratio)
