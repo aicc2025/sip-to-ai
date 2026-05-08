@@ -63,6 +63,9 @@ class OpenAIRealtimeClient(AiDuplexBase):
         api_key: Optional[str] = None,
         model: str = "gpt-realtime",
         voice: str = "marin",
+        ws_endpoint: str = "wss://api.openai.com/v1/realtime",
+        project: Optional[str] = None,
+        organization: Optional[str] = None,
         instructions: str = "You are a helpful assistant.",
         greeting: Optional[str] = None
     ) -> None:
@@ -72,6 +75,9 @@ class OpenAIRealtimeClient(AiDuplexBase):
             api_key: OpenAI API key
             model: Model to use
             voice: Voice for TTS
+            ws_endpoint: OpenAI Realtime WebSocket endpoint
+            project: Optional OpenAI project id for scoped model access
+            organization: Optional OpenAI organization id for scoped model access
             instructions: System instructions/prompt for the AI
             greeting: Optional greeting message to play when call connects
 
@@ -96,10 +102,12 @@ class OpenAIRealtimeClient(AiDuplexBase):
 
         self._model = model
         self._voice = voice
+        self._project = project or os.getenv("OPENAI_PROJECT") or os.getenv("OPENAI_PROJECT_ID")
+        self._organization = organization or os.getenv("OPENAI_ORGANIZATION") or os.getenv("OPENAI_ORG_ID")
         self._instructions = instructions
         self._greeting = greeting
         self._ws: Optional[WebSocketClientProtocol] = None
-        self._ws_url = "wss://api.openai.com/v1/realtime"
+        self._ws_url = ws_endpoint.rstrip("/")
 
         # Event queues (using asyncio Queues)
         self._audio_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=100)
@@ -109,6 +117,7 @@ class OpenAIRealtimeClient(AiDuplexBase):
         self._stop_event = asyncio.Event()
         self._session_created_event = asyncio.Event()
         self._session_updated_event = asyncio.Event()
+        self._connect_error: Optional[str] = None
         self._message_handler_task: Optional[asyncio.Task[None]] = None
 
         # Stats for debugging
@@ -125,9 +134,7 @@ class OpenAIRealtimeClient(AiDuplexBase):
         try:
             # Connect WebSocket with auth headers and timeout
             # Note: Don't use "OpenAI-Beta: realtime=v1" - that connects to old API
-            headers = {
-                "Authorization": f"Bearer {self._api_key}"
-            }
+            headers = self._build_headers()
 
             # Set connection timeout (10 seconds)
             async with asyncio.timeout(10.0):
@@ -141,6 +148,7 @@ class OpenAIRealtimeClient(AiDuplexBase):
             self._stop_event.clear()
             self._session_created_event.clear()
             self._session_updated_event.clear()
+            self._connect_error = None
 
             # Start message handler task first
             self._message_handler_task = asyncio.create_task(
@@ -148,20 +156,18 @@ class OpenAIRealtimeClient(AiDuplexBase):
                 name="openai-message-handler"
             )
 
-            # Wait for session.created from OpenAI
+            # Wait for session.created from OpenAI (or fail fast on error event)
             self._logger.info("Waiting for session.created from OpenAI...")
-            async with asyncio.timeout(5.0):
-                await self._session_created_event.wait()
+            await self._wait_for_session_event(self._session_created_event, "session.created", 5.0)
 
             self._logger.info("Received session.created, now configuring session...")
 
             # Configure session after receiving session.created
             await self._configure_session()
 
-            # Wait for first session.updated from OpenAI
+            # Wait for first session.updated from OpenAI (or fail fast on error event)
             self._logger.info("Waiting for session.updated from OpenAI...")
-            async with asyncio.timeout(5.0):
-                await self._session_updated_event.wait()
+            await self._wait_for_session_event(self._session_updated_event, "session.updated", 5.0)
 
             self._logger.info("Received session.updated")
 
@@ -173,7 +179,9 @@ class OpenAIRealtimeClient(AiDuplexBase):
             self._logger.info(
                 "OpenAI Realtime connected",
                 model=self._model,
-                voice=self._voice
+                voice=self._voice,
+                has_project=bool(self._project),
+                has_organization=bool(self._organization)
             )
 
         except Exception as e:
@@ -316,6 +324,27 @@ class OpenAIRealtimeClient(AiDuplexBase):
         await self.close()
         await asyncio.sleep(1.0)
         await self.connect()
+
+    def _build_headers(self) -> Dict[str, str]:
+        """Build OpenAI request headers, including optional project/org scope."""
+        headers = {"Authorization": f"Bearer {self._api_key}"}
+        if self._project:
+            headers["OpenAI-Project"] = self._project
+        if self._organization:
+            headers["OpenAI-Organization"] = self._organization
+        return headers
+
+    async def _wait_for_session_event(
+        self, event: asyncio.Event, name: str, timeout: float
+    ) -> None:
+        """Wait for an asyncio.Event or raise with the OpenAI error if one arrives first."""
+        async with asyncio.timeout(timeout):
+            while True:
+                if event.is_set():
+                    return
+                if self._connect_error is not None:
+                    raise ConnectionError(f"OpenAI rejected {name}: {self._connect_error}")
+                await asyncio.sleep(0.05)
 
     async def _configure_session(self) -> None:
         """Configure initial session using new schema."""
@@ -555,15 +584,44 @@ class OpenAIRealtimeClient(AiDuplexBase):
                     )
 
         elif msg_type == "error":
+            err = data.get("error", {}) or {}
+            err_message = self._format_error_message(err)
+            # Surface to connect() so it fails fast instead of timing out
+            if not self._session_updated_event.is_set():
+                self._connect_error = err_message
             await self._event_queue.put(
                 AiEvent(
                     type=AiEventType.ERROR,
-                    error=data.get("error", {}).get("message"),
+                    error=err_message,
                     timestamp=time.time()
                 )
             )
-            self._logger.error("OpenAI error", error=data.get("error"))
+            self._logger.error("OpenAI error", error=err)
 
         else:
             # Log unhandled events for debugging
             self._logger.debug(f"Unhandled event: {msg_type}", data=data)
+
+    def _format_error_message(self, err: Dict) -> str:
+        """Return a useful error string without logging credentials."""
+        message = err.get("message") or "unknown error"
+        code = err.get("code")
+        err_type = err.get("type")
+
+        parts = [message]
+        details = ", ".join(str(value) for value in (err_type, code) if value)
+        if details:
+            parts.append(f"({details})")
+
+        if code == "mismatched_project":
+            parts.append(
+                "OPENAI_PROJECT does not match the project that owns OPENAI_API_KEY. "
+                "Use an API key created in that project, or set OPENAI_PROJECT to the key's project."
+            )
+        elif code == "model_not_found" or "does not exist or you do not have access" in message:
+            parts.append(
+                "Check that OPENAI_API_KEY belongs to the project with access to "
+                f"{self._model}, or set OPENAI_PROJECT / OPENAI_ORGANIZATION for that scope."
+            )
+
+        return " ".join(parts)

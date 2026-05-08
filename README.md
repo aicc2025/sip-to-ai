@@ -13,7 +13,7 @@ This project:
 - built for call center / telephony scenarios
 
 **SIP-to-AI** — stream RTP audio from **FreeSWITCH / OpenSIPS / Asterisk** directly to **end-to-end realtime voice models**:
-- ✅ **OpenAI Realtime API** (gpt-realtime GA)
+- ✅ **OpenAI Realtime API** (`gpt-realtime-2`)
 - ✅ **Deepgram Voice Agent**
 - ✅ **Gemini Live** (Gemini 2.5 Flash)
 - ✅ **xAI Grok Voice** (grok-voice-think-fast-1.0)
@@ -44,7 +44,8 @@ Simple passthrough bridge: **SIP (G.711 μ-law @ 8kHz)** ↔ **AI voice models**
    # AI Service
    AI_VENDOR=openai
    OPENAI_API_KEY=sk-proj-your-key-here
-   OPENAI_MODEL=gpt-realtime
+   OPENAI_PROJECT=proj-your-project-id-here
+   OPENAI_MODEL=gpt-realtime-2
 
    # Agent prompt
    AGENT_PROMPT_FILE=agent_prompt.yaml

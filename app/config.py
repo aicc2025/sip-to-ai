@@ -99,8 +99,10 @@ class AIConfig:
 
     # OpenAI Configuration
     openai_api_key: str = ""
+    openai_project: str = ""
+    openai_organization: str = ""
     openai_ws_endpoint: str = "wss://api.openai.com/v1/realtime"
-    openai_model: str = "gpt-4-turbo-realtime"
+    openai_model: str = "gpt-realtime"
 
     # Deepgram Configuration
     deepgram_api_key: str = ""
@@ -164,8 +166,10 @@ class Config:
             vendor=ai_vendor,  # type: ignore
             agent_prompt_file=os.getenv("AGENT_PROMPT_FILE", ""),
             openai_api_key=os.getenv("OPENAI_API_KEY", ""),
+            openai_project=os.getenv("OPENAI_PROJECT", os.getenv("OPENAI_PROJECT_ID", "")),
+            openai_organization=os.getenv("OPENAI_ORGANIZATION", os.getenv("OPENAI_ORG_ID", "")),
             openai_ws_endpoint=os.getenv("OPENAI_WS_ENDPOINT", "wss://api.openai.com/v1/realtime"),
-            openai_model=os.getenv("OPENAI_MODEL", "gpt-4-turbo-realtime"),
+            openai_model=os.getenv("OPENAI_MODEL", "gpt-realtime"),
             deepgram_api_key=os.getenv("DEEPGRAM_API_KEY", ""),
             deepgram_listen_model=os.getenv("DEEPGRAM_LISTEN_MODEL", "nova-2"),
             deepgram_speak_model=os.getenv("DEEPGRAM_SPEAK_MODEL", "aura-asteria-en"),

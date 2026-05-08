@@ -128,6 +128,9 @@ def create_ai_client() -> AiDuplexClient:
         logger.info(
             "Using OpenAI Realtime client",
             model=config.ai.openai_model,
+            endpoint=config.ai.openai_ws_endpoint,
+            has_project=bool(config.ai.openai_project),
+            has_organization=bool(config.ai.openai_organization),
             has_greeting=greeting is not None,
             instructions_length=len(instructions),
             greeting_preview=greeting[:50] if greeting else None
@@ -136,6 +139,9 @@ def create_ai_client() -> AiDuplexClient:
         client = OpenAIRealtimeClient(
             api_key=config.ai.openai_api_key,
             model=config.ai.openai_model,
+            ws_endpoint=config.ai.openai_ws_endpoint,
+            project=config.ai.openai_project,
+            organization=config.ai.openai_organization,
             instructions=instructions,
             greeting=greeting
         )
