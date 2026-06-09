@@ -43,7 +43,7 @@ class GeminiLiveClient(AiDuplexBase):
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model: str = "gemini-2.5-flash-native-audio-preview-12-2025",
+        model: str = "gemini-3.1-flash-live-preview",
         voice: str = "Puck",
         instructions: str = "You are a helpful assistant.",
         greeting: Optional[str] = None
@@ -187,13 +187,15 @@ class GeminiLiveClient(AiDuplexBase):
                 expected_output=640  # 320 samples * 2 bytes @ 16kHz
             )
 
-        # Send realtime input message with base64-encoded audio
+        # Send realtime input message with base64-encoded audio.
+        # Use the `audio` Blob field; `mediaChunks` is deprecated and rejected
+        # (WebSocket close 1007) by newer Live API models.
         message = {
             "realtimeInput": {
-                "mediaChunks": [{
+                "audio": {
                     "mimeType": "audio/pcm;rate=16000",
                     "data": base64.b64encode(pcm16_16k).decode("utf-8")
-                }]
+                }
             }
         }
 
