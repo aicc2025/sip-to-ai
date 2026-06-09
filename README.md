@@ -15,7 +15,7 @@ This project:
 **SIP-to-AI** — stream RTP audio from **FreeSWITCH / OpenSIPS / Asterisk** directly to **end-to-end realtime voice models**:
 - ✅ **OpenAI Realtime API** (`gpt-realtime-2`)
 - ✅ **Deepgram Voice Agent**
-- ✅ **Gemini Live** (Gemini 2.5 Flash)
+- ✅ **Gemini Live** (`gemini-3.1-flash-live-preview`, Gemini 2.5 Flash)
 - ✅ **xAI Grok Voice** (grok-voice-think-fast-1.0)
 
 Simple passthrough bridge: **SIP (G.711 μ-law @ 8kHz)** ↔ **AI voice models**. OpenAI, Deepgram, and Grok support native G.711, Gemini requires PCM16 resampling (8kHz ↔ 16kHz/24kHz).
@@ -178,6 +178,7 @@ sequenceDiagram
 - WebSocket: `wss://generativelanguage.googleapis.com/ws/...BidiGenerateContent`
 - Audio format: PCM16 (input @ 16kHz, output @ 24kHz)
 - Resampling: 8kHz SIP ↔ 16kHz/24kHz Gemini (handled internally)
+- Uplink uses `realtimeInput.audio` Blob (the deprecated `mediaChunks` field is rejected by newer models such as `gemini-3.1-flash-live-preview` with WebSocket close 1007)
 - Settings: model, voice, system instructions
 
 **`GrokVoiceClient`** (`app/ai/grok_voice.py`)
@@ -220,9 +221,11 @@ Set `AI_VENDOR=gemini` in `.env`:
 AI_VENDOR=gemini
 GEMINI_API_KEY=your-key-here
 AGENT_PROMPT_FILE=agent_prompt.yaml
-GEMINI_MODEL=gemini-2.5-flash-native-audio-preview-12-2025
+GEMINI_MODEL=gemini-3.1-flash-live-preview
 GEMINI_VOICE=Puck
 ```
+
+Supported models (any Live API model works): `gemini-3.1-flash-live-preview` (default), `gemini-2.5-flash-native-audio-preview-12-2025`.
 
 Available voices: `Puck`, `Charon`, `Kore`, `Fenrir`, `Aoede`
 
