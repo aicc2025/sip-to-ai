@@ -12,13 +12,16 @@ API Documentation:
 
 import asyncio
 import json
-from typing import AsyncIterator, Dict, Optional
+from typing import TYPE_CHECKING, AsyncIterator, Dict, Optional
 
 import structlog
 import websockets
 from websockets.client import WebSocketClientProtocol
 
 from app.ai.duplex_base import AiDuplexBase, AiEvent, AiEventType
+
+if TYPE_CHECKING:
+    from app.ai.sixtydb_tts import SixtyDBTTSClient
 
 
 class DeepgramAgentClient(AiDuplexBase):
@@ -34,7 +37,10 @@ class DeepgramAgentClient(AiDuplexBase):
         speak_model: str = "aura-asteria-en",
         llm_model: str = "gpt-4o-mini",
         instructions: str = "You are a helpful voice assistant.",
-        greeting: Optional[str] = None
+        greeting: Optional[str] = None,
+        speak_provider: str = "deepgram",
+        sixtydb_api_key: Optional[str] = None,
+        sixtydb_voice_id: Optional[str] = None,
     ) -> None:
         """Initialize Deepgram Voice Agent client.
 
@@ -44,10 +50,14 @@ class DeepgramAgentClient(AiDuplexBase):
             frame_ms: Frame duration in milliseconds
             audio_format: Audio format (mulaw for μ-law encoding)
             listen_model: STT model (nova-2, nova-3)
-            speak_model: TTS voice model
+            speak_model: TTS voice model (used only when speak_provider="deepgram")
             llm_model: LLM model for agent
             instructions: Agent instructions/system prompt
             greeting: Optional greeting message spoken at call start
+            speak_provider: Who renders the agent's voice: "deepgram" (built-in
+                Aura TTS) or "60db" (Deepgram stays the brain, 60db is the voice).
+            sixtydb_api_key: 60db API key (required when speak_provider="60db")
+            sixtydb_voice_id: 60db voice UUID (optional; defaults to 60db default)
         """
         # Initialize base class (same pattern as OpenAI client)
         super().__init__(sample_rate=sample_rate, frame_ms=frame_ms)
@@ -62,6 +72,23 @@ class DeepgramAgentClient(AiDuplexBase):
         self._llm_model = llm_model
         self._instructions = instructions
         self._greeting = greeting
+
+        # Speak provider: "deepgram" (built-in Aura) or "60db" (external voice).
+        self._speak_provider = speak_provider
+        self._sixtydb: Optional["SixtyDBTTSClient"] = None
+        if self._speak_provider == "60db":
+            if not sixtydb_api_key:
+                raise ValueError("60db API key is required when speak_provider='60db'")
+            # Imported lazily to keep the default Deepgram path dependency-free.
+            from app.ai.sixtydb_tts import SixtyDBTTSClient
+
+            self._sixtydb = SixtyDBTTSClient(
+                api_key=sixtydb_api_key,
+                voice_id=sixtydb_voice_id,
+                sample_rate=sample_rate,
+                on_audio=self._enqueue_agent_audio,
+                on_flush_complete=self._on_sixtydb_flush_done,
+            )
 
         # Override frame size for mulaw (1 byte per sample, same as G.711)
         if audio_format == "mulaw":
@@ -133,6 +160,18 @@ class DeepgramAgentClient(AiDuplexBase):
             )
             self._logger.info("Started KeepAlive task")
 
+            # If 60db is the voice, connect it and have IT speak the greeting.
+            # (Deepgram remains the brain: STT + LLM + turn-taking.)
+            if self._sixtydb is not None:
+                await self._sixtydb.connect()
+                self._logger.info("60db TTS connected as speak provider")
+                if self._greeting:
+                    # speak() returns immediately; audio streams in via callback.
+                    await self._sixtydb.speak(self._greeting)
+                else:
+                    # No greeting to produce "first audio", so unblock user audio now.
+                    self._received_first_audio = True
+
             # Emit connected event
             await self._event_queue.put(AiEvent(
                 type=AiEventType.CONNECTED,
@@ -176,7 +215,9 @@ class DeepgramAgentClient(AiDuplexBase):
             }
         }
 
-        if self._greeting:
+        # When 60db is the voice, we speak the greeting ourselves via 60db so
+        # Deepgram does not auto-greet with its own (ignored) audio.
+        if self._greeting and self._speak_provider != "60db":
             agent_config["greeting"] = self._greeting
 
         config = {
@@ -231,6 +272,10 @@ class DeepgramAgentClient(AiDuplexBase):
                     await self._receive_task
                 except asyncio.CancelledError:
                     pass
+
+            # Close the 60db voice connection if in use.
+            if self._sixtydb is not None:
+                await self._sixtydb.close()
 
             await self._ws.close()
             self._ws = None
@@ -350,33 +395,53 @@ class DeepgramAgentClient(AiDuplexBase):
             ))
 
     async def _handle_binary_audio(self, audio_data: bytes) -> None:
-        """Handle binary audio message from Deepgram.
+        """Handle binary (mu-law) audio message produced by Deepgram's own TTS.
 
-        Deepgram sends binary μ-law audio in variable-size chunks (typically 960 bytes).
-        Convert to PCM16 and yield as variable-size chunk.
-
-        Frame splitting and padding is handled by AudioAdapter.feed_ai_audio().
+        When 60db is the speak provider, Deepgram's audio is ignored entirely —
+        speech is produced by 60db from ConversationText instead.
 
         Args:
             audio_data: Binary μ-law audio data from Deepgram
         """
+        if self._speak_provider == "60db":
+            return
+        await self._enqueue_agent_audio(audio_data)
+
+    async def _enqueue_agent_audio(self, audio_data: bytes) -> None:
+        """Convert mu-law agent audio to PCM16 and queue it for the bridge.
+
+        Shared by both speak providers:
+        - Deepgram's binary audio (default path)
+        - 60db's decoded audio_chunk bytes (on_audio callback)
+
+        Frame splitting/padding is handled downstream by AudioAdapter.feed_ai_audio().
+
+        Args:
+            audio_data: Binary μ-law audio data (8kHz)
+        """
         import time
         from app.utils.codec import Codec
 
-        # Mark that we've received first audio - now safe to send user audio
+        # Mark that we've received first audio - now safe to send user audio.
         if not self._received_first_audio:
             self._received_first_audio = True
             self._logger.info("Received first AI audio - enabling user audio")
 
-        # Mark agent as speaking and update timestamp
+        # Mark agent as speaking and update timestamp (drives barge-in suppression).
         self._agent_speaking = True
         self._last_agent_audio_time = time.time()
 
-        # Convert μ-law to PCM16 (variable-size chunk)
+        # Convert μ-law to PCM16 (variable-size chunk).
         pcm16_chunk = Codec.ulaw_to_pcm16(audio_data)
 
-        # Send entire chunk to AudioAdapter (it will handle frame splitting)
+        # Send entire chunk to AudioAdapter (it will handle frame splitting).
         await self._audio_queue.put(pcm16_chunk)
+
+    async def _on_sixtydb_flush_done(self) -> None:
+        """Called when 60db finishes synthesizing an utterance."""
+        # 60db has spoken the full reply; clear the speaking flag so the
+        # caller's audio is forwarded to Deepgram again (after the tail guard).
+        self._agent_speaking = False
 
     async def _handle_json_message(self, message: str) -> None:
         """Handle JSON message from Deepgram.
@@ -401,7 +466,10 @@ class DeepgramAgentClient(AiDuplexBase):
                 ))
 
             elif msg_type == "AgentAudioDone":
-                self._agent_speaking = False
+                # When 60db is the voice, Deepgram's own audio is ignored, so its
+                # "done" signal must not clear the flag — 60db's flush_completed does.
+                if self._speak_provider != "60db":
+                    self._agent_speaking = False
                 await self._event_queue.put(AiEvent(
                     type=AiEventType.TRANSCRIPT_FINAL,
                     data={"event": "agent_audio_done"}
@@ -428,8 +496,14 @@ class DeepgramAgentClient(AiDuplexBase):
                 self._logger.info("Connected to Deepgram Voice Agent")
 
             elif msg_type == "ConversationText":
-                # Log conversation for debugging (optional)
-                pass
+                # Deepgram emits the conversation transcript for both sides:
+                #   {"type": "ConversationText", "role": "assistant"|"user", "content": "..."}
+                # When 60db is the voice, the assistant's text is what we synthesize.
+                if self._speak_provider == "60db" and self._sixtydb is not None:
+                    role = data.get("role")
+                    content = data.get("content", "")
+                    if role == "assistant" and content.strip():
+                        await self._sixtydb.speak(content)
 
             elif msg_type == "History":
                 # Conversation history (optional)
