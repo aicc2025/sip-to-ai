@@ -55,6 +55,7 @@ class SixtyDBTTSClient:
         similarity: int = 75,
         on_audio: Optional[Callable[[bytes], Awaitable[None]]] = None,
         on_flush_complete: Optional[Callable[[], Awaitable[None]]] = None,
+        ws_url: Optional[str] = None,
     ) -> None:
         """Initialize the 60db TTS client.
 
@@ -67,6 +68,8 @@ class SixtyDBTTSClient:
             similarity: 0-100 (voice matching fidelity)
             on_audio: Async callback invoked with raw mu-law bytes per chunk
             on_flush_complete: Async callback invoked when an utterance is done
+            ws_url: Override the TTS WebSocket endpoint (defaults to the public
+                60db endpoint). Useful for pointing at a local fake server in tests.
         """
         if not api_key:
             raise ValueError("60db API key is required")
@@ -81,6 +84,7 @@ class SixtyDBTTSClient:
         self._similarity = similarity
         self._on_audio = on_audio
         self._on_flush_complete = on_flush_complete
+        self._ws_url = ws_url or self.WS_URL
 
         self._ws: Optional[WebSocketClientProtocol] = None
         self._connected = False
@@ -101,11 +105,12 @@ class SixtyDBTTSClient:
         if self._connected:
             return
 
-        url = f"{self.WS_URL}?apiKey={self._api_key}"
-        self._logger.info("Connecting to 60db TTS", url=self.WS_URL, voice_id=self._voice_id)
+        url = f"{self._ws_url}?apiKey={self._api_key}"
+        self._logger.info("Connecting to 60db TTS", url=self._ws_url, voice_id=self._voice_id)
 
         async with asyncio.timeout(10.0):
-            self._ws = await websockets.connect(url, open_timeout=10.0)
+            # proxy=None: connect directly; don't auto-use an env SOCKS proxy.
+            self._ws = await websockets.connect(url, open_timeout=10.0, proxy=None)
 
         self._connected = True
 

@@ -12,6 +12,7 @@ API Documentation:
 
 import asyncio
 import json
+import time
 from typing import TYPE_CHECKING, AsyncIterator, Dict, Optional
 
 import structlog
@@ -26,6 +27,15 @@ if TYPE_CHECKING:
 
 class DeepgramAgentClient(AiDuplexBase):
     """Deepgram Voice Agent client using WebSocket only."""
+
+    # Caller audio is held until the agent has spoken once (so we don't trip
+    # Deepgram's VAD mid-greeting). If no agent audio arrives within this many
+    # seconds (e.g. the greeting TTS failed), open the gate anyway so the caller
+    # can still be heard instead of deadlocking forever (issue #6).
+    FIRST_AUDIO_GATE_FALLBACK_SEC = 3.0
+
+    # Throttle drop/forward diagnostics: log the 1st event then every Nth.
+    _DIAG_LOG_EVERY = 250
 
     def __init__(
         self,
@@ -62,6 +72,9 @@ class DeepgramAgentClient(AiDuplexBase):
         # Initialize base class (same pattern as OpenAI client)
         super().__init__(sample_rate=sample_rate, frame_ms=frame_ms)
 
+        # Strip whitespace so a trailing newline/space pasted into .env doesn't
+        # silently corrupt the auth header (a common cause of HTTP 401).
+        api_key = api_key.strip() if api_key else api_key
         if not api_key:
             raise ValueError("Deepgram API key is required")
 
@@ -111,6 +124,12 @@ class DeepgramAgentClient(AiDuplexBase):
         self._agent_speaking = False
         self._last_agent_audio_time = 0.0  # Timestamp of last agent audio
         self._received_first_audio = False  # Track if we've received any AI audio yet
+        self._connect_time = 0.0  # monotonic timestamp set on connect()
+
+        # Media-path diagnostics (issue #6): make silent audio drops visible.
+        self._caller_frames_forwarded = 0
+        self._caller_frames_dropped = 0
+        self._agent_audio_chunks = 0
 
         # KeepAlive task - send periodic KeepAlive messages
         self._keepalive_task: Optional[asyncio.Task] = None
@@ -137,10 +156,12 @@ class DeepgramAgentClient(AiDuplexBase):
                 self._ws = await websockets.connect(
                     self._ws_url,
                     additional_headers={"Authorization": f"token {self._api_key}"},
-                    open_timeout=10.0  # WebSocket-level timeout
+                    open_timeout=10.0,  # WebSocket-level timeout
+                    proxy=None,  # Direct connect; don't auto-use env SOCKS proxy
                 )
 
             self._connected = True
+            self._connect_time = time.monotonic()
             self._logger.info("Connected to Deepgram Voice Agent")
 
             # Send session configuration
@@ -168,15 +189,41 @@ class DeepgramAgentClient(AiDuplexBase):
                 if self._greeting:
                     # speak() returns immediately; audio streams in via callback.
                     await self._sixtydb.speak(self._greeting)
-                else:
-                    # No greeting to produce "first audio", so unblock user audio now.
-                    self._received_first_audio = True
+
+            # If no greeting is configured, nothing will produce the "first AI
+            # audio" that opens the caller-audio gate — so open it now. Otherwise
+            # caller audio would be dropped forever (issue #6 deadlock).
+            if not self._greeting:
+                self._received_first_audio = True
+                self._logger.info(
+                    "No greeting configured - enabling caller audio immediately"
+                )
 
             # Emit connected event
             await self._event_queue.put(AiEvent(
                 type=AiEventType.CONNECTED,
                 data={"status": "connected"}
             ))
+
+        except websockets.exceptions.InvalidStatus as e:
+            # Handshake rejected by Deepgram. Turn the cryptic InvalidStatus into
+            # an actionable message — 401/403 almost always means a bad/expired
+            # DEEPGRAM_API_KEY or a key without Voice Agent access.
+            self._connected = False
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            if status in (401, 403):
+                msg = (
+                    f"Deepgram authentication failed (HTTP {status}): check that "
+                    "DEEPGRAM_API_KEY is a valid key with Voice Agent access"
+                )
+            else:
+                msg = f"Deepgram rejected the connection (HTTP {status})"
+            self._logger.error(msg)
+            await self._event_queue.put(AiEvent(
+                type=AiEventType.ERROR,
+                data={"error": msg, "status": status}
+            ))
+            raise ConnectionError(msg) from e
 
         except Exception as e:
             self._connected = False
@@ -297,7 +344,7 @@ class DeepgramAgentClient(AiDuplexBase):
             frame_20ms: PCM16 audio frame @ 8kHz (320 bytes/20ms)
         """
         if not self._ws:
-            self._logger.warning("Cannot send audio: not connected")
+            self._drop_caller_frame("not_connected")
             return
 
         # Wait for SettingsApplied before sending audio
@@ -305,21 +352,33 @@ class DeepgramAgentClient(AiDuplexBase):
             try:
                 await asyncio.wait_for(self._settings_ready.wait(), timeout=5.0)
             except asyncio.TimeoutError:
+                self._drop_caller_frame("settings_timeout")
                 self._logger.error("Timeout waiting for SettingsApplied")
                 return
 
         try:
-            # Don't send any audio until we receive first AI audio
-            # This prevents triggering Deepgram's VAD before greeting starts
+            # Inbound gate: hold caller audio until the agent has spoken once so
+            # we don't trip Deepgram's VAD mid-greeting. But never hold forever:
+            # if no agent audio has arrived within the fallback window (e.g. the
+            # greeting TTS failed), open the gate so the caller can still be heard
+            # instead of deadlocking (issue #6).
             if not self._received_first_audio:
-                return
+                waited = time.monotonic() - self._connect_time
+                if waited < self.FIRST_AUDIO_GATE_FALLBACK_SEC:
+                    self._drop_caller_frame("awaiting_first_audio")
+                    return
+                self._received_first_audio = True
+                self._logger.warning(
+                    "No AI audio received - opening caller audio gate to avoid deadlock",
+                    waited_sec=round(waited, 1),
+                )
 
             # Skip sending audio while agent is speaking (prevent barge-in)
-            import time
             current_time = time.time()
             time_since_last_audio = current_time - self._last_agent_audio_time
 
             if self._agent_speaking or time_since_last_audio < 2.0:
+                self._drop_caller_frame("agent_speaking")
                 return
 
             # Convert PCM16 → mulaw
@@ -329,12 +388,45 @@ class DeepgramAgentClient(AiDuplexBase):
             # Send raw binary audio (μ-law bytes) directly to Deepgram
             await self._ws.send(mulaw_chunk)
 
+            self._caller_frames_forwarded += 1
+            if self._caller_frames_forwarded == 1:
+                self._logger.info(
+                    "First caller audio frame forwarded to Deepgram",
+                    bytes=len(mulaw_chunk),
+                )
+            elif self._caller_frames_forwarded % self._DIAG_LOG_EVERY == 0:
+                self._logger.info(
+                    "Caller audio forwarded to Deepgram",
+                    frames=self._caller_frames_forwarded,
+                    dropped=self._caller_frames_dropped,
+                )
+
         except Exception as e:
             self._logger.error("Failed to send audio", error=str(e))
             await self._event_queue.put(AiEvent(
                 type=AiEventType.ERROR,
                 data={"error": f"Send audio failed: {e}"}
             ))
+
+    def _drop_caller_frame(self, reason: str) -> None:
+        """Count a dropped caller frame and log it (throttled) for diagnosis.
+
+        Caller audio used to be dropped silently for several reasons, which made
+        issue #6 ("caller audio is not logged") impossible to diagnose. Every
+        drop is now counted and surfaced.
+        """
+        self._caller_frames_dropped += 1
+        if (
+            self._caller_frames_dropped == 1
+            or self._caller_frames_dropped % self._DIAG_LOG_EVERY == 0
+        ):
+            self._logger.info(
+                "Caller audio frame dropped",
+                reason=reason,
+                dropped=self._caller_frames_dropped,
+                received_first_audio=self._received_first_audio,
+                agent_speaking=self._agent_speaking,
+            )
 
     async def _send_keepalive(self) -> None:
         """Send periodic KeepAlive messages to prevent connection timeout.
@@ -419,7 +511,6 @@ class DeepgramAgentClient(AiDuplexBase):
         Args:
             audio_data: Binary μ-law audio data (8kHz)
         """
-        import time
         from app.utils.codec import Codec
 
         # Mark that we've received first audio - now safe to send user audio.
@@ -436,6 +527,20 @@ class DeepgramAgentClient(AiDuplexBase):
 
         # Send entire chunk to AudioAdapter (it will handle frame splitting).
         await self._audio_queue.put(pcm16_chunk)
+
+        # Outbound diagnostics (issue #6): make the AI→caller path observable.
+        self._agent_audio_chunks += 1
+        if (
+            self._agent_audio_chunks == 1
+            or self._agent_audio_chunks % self._DIAG_LOG_EVERY == 0
+        ):
+            self._logger.info(
+                "Agent audio queued for caller",
+                chunks=self._agent_audio_chunks,
+                ulaw_bytes=len(audio_data),
+                pcm16_bytes=len(pcm16_chunk),
+                provider=self._speak_provider,
+            )
 
     async def _on_sixtydb_flush_done(self) -> None:
         """Called when 60db finishes synthesizing an utterance."""

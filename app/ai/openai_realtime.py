@@ -141,7 +141,8 @@ class OpenAIRealtimeClient(AiDuplexBase):
                 self._ws = await websockets.connect(
                     f"{self._ws_url}?model={self._model}",
                     additional_headers=headers,
-                    open_timeout=10.0  # WebSocket-level timeout
+                    open_timeout=10.0,  # WebSocket-level timeout
+                    proxy=None,  # Direct connect; don't auto-use env SOCKS proxy
                 )
 
             self._connected = True
