@@ -277,6 +277,7 @@ class GrokVoiceClient(AiDuplexBase):
                     f"{self._ws_url}?model={self._model}",
                     additional_headers=headers,
                     open_timeout=10.0,
+                    proxy=None,  # Direct connect; don't auto-use env SOCKS proxy
                 )
 
             self._connected = True

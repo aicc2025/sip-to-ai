@@ -162,13 +162,21 @@ def create_ai_client() -> AiDuplexClient:
         # Load agent configuration (required for Deepgram)
         instructions, greeting = _load_agent_config(logger)
 
+        # Validate 60db voice configuration if selected as the speak provider.
+        if config.ai.speak_provider == "60db" and not config.ai.sixtydb_api_key:
+            raise ValueError(
+                "SPEAK_PROVIDER=60db requires SIXTYDB_API_KEY to be set"
+            )
+
         logger.info(
             "Using Deepgram Voice Agent client",
             prompt_file=config.ai.agent_prompt_file,
             instructions_length=len(instructions),
             has_greeting=greeting is not None,
             greeting_preview=greeting[:50] if greeting else None,
-            instructions_preview=instructions[:100] if instructions else None
+            instructions_preview=instructions[:100] if instructions else None,
+            speak_provider=config.ai.speak_provider,
+            sixtydb_voice_id=config.ai.sixtydb_voice_id if config.ai.speak_provider == "60db" else None,
         )
 
         return DeepgramAgentClient(
@@ -180,7 +188,10 @@ def create_ai_client() -> AiDuplexClient:
             speak_model=config.ai.deepgram_speak_model,
             llm_model=config.ai.deepgram_llm_model,
             instructions=instructions,
-            greeting=greeting
+            greeting=greeting,
+            speak_provider=config.ai.speak_provider,
+            sixtydb_api_key=config.ai.sixtydb_api_key,
+            sixtydb_voice_id=config.ai.sixtydb_voice_id,
         )
 
     elif vendor == "gemini":

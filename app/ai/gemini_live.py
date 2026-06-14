@@ -101,7 +101,8 @@ class GeminiLiveClient(AiDuplexBase):
             async with asyncio.timeout(10.0):
                 self._ws = await websockets.connect(
                     ws_url,
-                    open_timeout=10.0
+                    open_timeout=10.0,
+                    proxy=None,  # Direct connect; don't auto-use env SOCKS proxy
                 )
 
             self._connected = True

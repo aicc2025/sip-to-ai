@@ -174,6 +174,7 @@ class RTPProtocol(asyncio.DatagramProtocol):
         """
         self.session = session
         self.transport: Optional[asyncio.DatagramTransport] = None
+        self._logged_first_packet = False
 
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
         """Called when UDP socket is ready."""
@@ -194,6 +195,18 @@ class RTPProtocol(asyncio.DatagramProtocol):
 
             # Decode G.711 to PCM16
             pcm = self.session.codec.decode_pcmu(rtp.payload)
+
+            # Make the inbound caller-audio path visible on first packet (issue #6:
+            # "caller audio is not logged"). Confirms RTP is actually arriving.
+            if not self._logged_first_packet:
+                self._logged_first_packet = True
+                logger.info(
+                    "First inbound RTP packet received from caller",
+                    payload_type=rtp.payload_type,
+                    payload_bytes=len(rtp.payload),
+                    decoded_pcm16_bytes=len(pcm),
+                    source=addr,
+                )
 
             # Put into receive queue (non-blocking)
             try:
@@ -385,6 +398,14 @@ class RTPSession:
                     try:
                         self.transport.sendto(packet, self.remote_addr)
                         self._frames_sent += 1
+                        # Confirm the outbound caller-audio path on first packet
+                        # (issue #6: "caller does not hear any audio").
+                        if self._frames_sent == 1:
+                            logger.info(
+                                "First outbound RTP packet sent to caller",
+                                payload_bytes=len(ulaw_data),
+                                remote_addr=self.remote_addr,
+                            )
                     except (AttributeError, OSError) as e:
                         # Transport closed during send - stop gracefully
                         logger.debug(
