@@ -40,6 +40,20 @@ class TestSpeakProviderConfig:
             assert cfg_module.config.ai.sixtydb_api_key == "sk_live_test"
             assert cfg_module.config.ai.sixtydb_voice_id == "voice-123"
 
+    def test_invalid_speak_provider_raises(self) -> None:
+        """An unknown SPEAK_PROVIDER must fail fast, not silently use Deepgram."""
+        with patch.dict(os.environ, {"SPEAK_PROVIDER": "elevenlabs"}, clear=False):
+            from app import config as cfg_module
+            with pytest.raises(ValueError, match="SPEAK_PROVIDER"):
+                reload(cfg_module)
+
+    def test_speak_provider_is_case_insensitive(self) -> None:
+        """Valid values are accepted regardless of case (e.g. '60DB')."""
+        with patch.dict(os.environ, {"SPEAK_PROVIDER": "60DB"}, clear=False):
+            from app import config as cfg_module
+            reload(cfg_module)
+            assert cfg_module.config.ai.speak_provider == "60db"
+
 
 class TestSixtyDBTTSClient:
     """SixtyDBTTSClient construction and message handling."""

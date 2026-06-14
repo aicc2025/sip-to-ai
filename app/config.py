@@ -171,6 +171,14 @@ class Config:
         if ai_vendor not in ["mock", "openai", "deepgram", "gemini", "grok"]:
             ai_vendor = "mock"
 
+        # Fail fast on an unknown SPEAK_PROVIDER rather than silently using the
+        # Deepgram voice (which would mask a 60db misconfiguration).
+        speak_provider = os.getenv("SPEAK_PROVIDER", "deepgram").lower()
+        if speak_provider not in ("deepgram", "60db"):
+            raise ValueError(
+                f"SPEAK_PROVIDER must be 'deepgram' or '60db', got: {speak_provider!r}"
+            )
+
         self.ai = AIConfig(
             vendor=ai_vendor,  # type: ignore
             agent_prompt_file=os.getenv("AGENT_PROMPT_FILE", ""),
@@ -183,7 +191,7 @@ class Config:
             deepgram_listen_model=os.getenv("DEEPGRAM_LISTEN_MODEL", "nova-2"),
             deepgram_speak_model=os.getenv("DEEPGRAM_SPEAK_MODEL", "aura-asteria-en"),
             deepgram_llm_model=os.getenv("DEEPGRAM_LLM_MODEL", "gpt-4o-mini"),
-            speak_provider=os.getenv("SPEAK_PROVIDER", "deepgram").lower(),  # type: ignore
+            speak_provider=speak_provider,  # type: ignore
             sixtydb_api_key=os.getenv("SIXTYDB_API_KEY", ""),
             sixtydb_voice_id=os.getenv(
                 "SIXTYDB_VOICE_ID", "fbb75ed2-975a-40c7-9e06-38e30524a9a1"
