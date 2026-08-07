@@ -112,4 +112,5 @@ GPT.md
 
 # Cursor
 .cursor/
-cursor.md.envrc
+cursor.md
+.envrc
