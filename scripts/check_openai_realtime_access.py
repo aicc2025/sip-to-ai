@@ -51,7 +51,7 @@ def main() -> int:
     load_dotenv()
 
     api_key = os.getenv("OPENAI_API_KEY", "")
-    model = os.getenv("OPENAI_MODEL", "gpt-realtime")
+    model = os.getenv("OPENAI_MODEL", "gpt-realtime-2.1")
     project = os.getenv("OPENAI_PROJECT", os.getenv("OPENAI_PROJECT_ID", ""))
     organization = os.getenv("OPENAI_ORGANIZATION", os.getenv("OPENAI_ORG_ID", ""))
 

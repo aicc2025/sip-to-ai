@@ -102,7 +102,7 @@ class AIConfig:
     openai_project: str = ""
     openai_organization: str = ""
     openai_ws_endpoint: str = "wss://api.openai.com/v1/realtime"
-    openai_model: str = "gpt-realtime"
+    openai_model: str = "gpt-realtime-2.1"
 
     # Deepgram Configuration
     deepgram_api_key: str = ""
@@ -127,7 +127,7 @@ class AIConfig:
     # xAI Grok Voice Configuration
     grok_api_key: str = ""
     grok_ws_endpoint: str = "wss://api.x.ai/v1/realtime"
-    grok_model: str = "grok-voice-think-fast-1.0"
+    grok_model: str = "grok-voice-think-fast-2.0"
     grok_voice: str = "eve"  # Built-in voices: eve (default), ara, leo, rex, sal
 
 
@@ -186,7 +186,7 @@ class Config:
             openai_project=os.getenv("OPENAI_PROJECT", os.getenv("OPENAI_PROJECT_ID", "")),
             openai_organization=os.getenv("OPENAI_ORGANIZATION", os.getenv("OPENAI_ORG_ID", "")),
             openai_ws_endpoint=os.getenv("OPENAI_WS_ENDPOINT", "wss://api.openai.com/v1/realtime"),
-            openai_model=os.getenv("OPENAI_MODEL", "gpt-realtime"),
+            openai_model=os.getenv("OPENAI_MODEL", "gpt-realtime-2.1"),
             deepgram_api_key=os.getenv("DEEPGRAM_API_KEY", ""),
             deepgram_listen_model=os.getenv("DEEPGRAM_LISTEN_MODEL", "nova-2"),
             deepgram_speak_model=os.getenv("DEEPGRAM_SPEAK_MODEL", "aura-asteria-en"),
@@ -201,7 +201,7 @@ class Config:
             gemini_voice=os.getenv("GEMINI_VOICE", "Puck"),
             grok_api_key=os.getenv("XAI_API_KEY", ""),
             grok_ws_endpoint=os.getenv("GROK_WS_ENDPOINT", "wss://api.x.ai/v1/realtime"),
-            grok_model=os.getenv("GROK_MODEL", "grok-voice-think-fast-1.0"),
+            grok_model=os.getenv("GROK_MODEL", "grok-voice-think-fast-2.0"),
             grok_voice=os.getenv("GROK_VOICE", "eve"),
         )
 

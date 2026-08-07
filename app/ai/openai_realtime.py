@@ -16,7 +16,7 @@ Session configuration (new schema):
     "type": "session.update",
     "session": {
         "type": "realtime",
-        "model": "gpt-realtime",
+        "model": "gpt-realtime-2.1",
         "output_modalities": ["audio"],
         "audio": {
             "input": {
@@ -61,7 +61,7 @@ class OpenAIRealtimeClient(AiDuplexBase):
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model: str = "gpt-realtime",
+        model: str = "gpt-realtime-2.1",
         voice: str = "marin",
         ws_endpoint: str = "wss://api.openai.com/v1/realtime",
         project: Optional[str] = None,

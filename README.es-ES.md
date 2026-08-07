@@ -15,10 +15,10 @@ Este proyecto:
 - diseñado para escenarios de centros de llamadas / telefonía
 
 **SIP-to-AI** — transmite audio RTP desde **FreeSWITCH / OpenSIPS / Asterisk** directamente a **modelos de voz en tiempo real de extremo a extremo**:
-- ✅ **OpenAI Realtime API** (`gpt-realtime-2`)
+- ✅ **OpenAI Realtime API** (`gpt-realtime-2.1`)
 - ✅ **Deepgram Voice Agent**
 - ✅ **Gemini Live** (`gemini-3.1-flash-live-preview`, Gemini 2.5 Flash)
-- ✅ **xAI Grok Voice** (grok-voice-think-fast-1.0)
+- ✅ **xAI Grok Voice** (grok-voice-think-fast-2.0)
 
 Puente de paso simple: **SIP (G.711 μ-law @ 8kHz)** ↔ **modelos de voz de IA**. OpenAI, Deepgram y Grok son compatibles con G.711 nativo; Gemini requiere remuestreo PCM16 (8kHz ↔ 16kHz/24kHz).
 
@@ -47,7 +47,7 @@ Puente de paso simple: **SIP (G.711 μ-law @ 8kHz)** ↔ **modelos de voz de IA*
    AI_VENDOR=openai
    OPENAI_API_KEY=sk-proj-your-key-here
    OPENAI_PROJECT=proj-your-project-id-here
-   OPENAI_MODEL=gpt-realtime-2
+   OPENAI_MODEL=gpt-realtime-2.1
 
    # Agent prompt
    AGENT_PROMPT_FILE=agent_prompt.yaml
@@ -277,15 +277,16 @@ Establece `AI_VENDOR=grok` en `.env`:
 AI_VENDOR=grok
 XAI_API_KEY=your-key-here
 AGENT_PROMPT_FILE=agent_prompt.yaml
-GROK_MODEL=grok-voice-think-fast-1.0
+GROK_MODEL=grok-voice-think-fast-2.0
 GROK_VOICE=eve
 ```
 
 Voces integradas disponibles: `eve` (predeterminado), `ara`, `leo`, `rex`, `sal`.
 
 Modelos disponibles:
-- `grok-voice-think-fast-1.0` (recomendado: mejor UX con razonamiento)
-- `grok-voice-fast-1.0` (más rápido, más económico)
+- `grok-voice-think-fast-2.0` (recomendado: última generación, mejor UX con razonamiento)
+- `grok-voice-think-fast-1.0` (generación anterior, versión fijada)
+- `grok-voice-latest` (alias que siempre apunta a la versión más reciente)
 
 Obtén tu clave API en [xAI Console](https://console.x.ai/).
 

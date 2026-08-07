@@ -13,10 +13,10 @@ This project:
 - built for call center / telephony scenarios
 
 **SIP-to-AI** — stream RTP audio from **FreeSWITCH / OpenSIPS / Asterisk** directly to **end-to-end realtime voice models**:
-- ✅ **OpenAI Realtime API** (`gpt-realtime-2`)
+- ✅ **OpenAI Realtime API** (`gpt-realtime-2.1`)
 - ✅ **Deepgram Voice Agent**
 - ✅ **Gemini Live** (`gemini-3.1-flash-live-preview`, Gemini 2.5 Flash)
-- ✅ **xAI Grok Voice** (grok-voice-think-fast-1.0)
+- ✅ **xAI Grok Voice** (grok-voice-think-fast-2.0)
 
 Simple passthrough bridge: **SIP (G.711 μ-law @ 8kHz)** ↔ **AI voice models**. OpenAI, Deepgram, and Grok support native G.711, Gemini requires PCM16 resampling (8kHz ↔ 16kHz/24kHz).
 
@@ -45,7 +45,7 @@ Simple passthrough bridge: **SIP (G.711 μ-law @ 8kHz)** ↔ **AI voice models**
    AI_VENDOR=openai
    OPENAI_API_KEY=sk-proj-your-key-here
    OPENAI_PROJECT=proj-your-project-id-here
-   OPENAI_MODEL=gpt-realtime-2
+   OPENAI_MODEL=gpt-realtime-2.1
 
    # Agent prompt
    AGENT_PROMPT_FILE=agent_prompt.yaml
@@ -277,15 +277,16 @@ Set `AI_VENDOR=grok` in `.env`:
 AI_VENDOR=grok
 XAI_API_KEY=your-key-here
 AGENT_PROMPT_FILE=agent_prompt.yaml
-GROK_MODEL=grok-voice-think-fast-1.0
+GROK_MODEL=grok-voice-think-fast-2.0
 GROK_VOICE=eve
 ```
 
 Available built-in voices: `eve` (default), `ara`, `leo`, `rex`, `sal`.
 
 Available models:
-- `grok-voice-think-fast-1.0` (recommended — best UX with reasoning)
-- `grok-voice-fast-1.0` (faster, cheaper)
+- `grok-voice-think-fast-2.0` (recommended — latest generation, best UX with reasoning)
+- `grok-voice-think-fast-1.0` (previous generation, pinned)
+- `grok-voice-latest` (alias that always tracks the newest release)
 
 Get your API key from [xAI Console](https://console.x.ai/).
 

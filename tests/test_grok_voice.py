@@ -29,7 +29,7 @@ class TestGrokConfig:
             from importlib import reload
             from app import config as cfg_module
             reload(cfg_module)
-            assert cfg_module.config.ai.grok_model == "grok-voice-think-fast-1.0"
+            assert cfg_module.config.ai.grok_model == "grok-voice-think-fast-2.0"
             assert cfg_module.config.ai.grok_voice == "eve"
             assert cfg_module.config.ai.grok_ws_endpoint == "wss://api.x.ai/v1/realtime"
 
@@ -75,7 +75,7 @@ class TestGrokConstructor:
         from app.ai.grok_voice import GrokVoiceClient
 
         client = GrokVoiceClient(api_key="k")
-        assert client._model == "grok-voice-think-fast-1.0"
+        assert client._model == "grok-voice-think-fast-2.0"
         assert client._voice == "eve"
         assert client._ws_url == "wss://api.x.ai/v1/realtime"
         assert client._sample_rate == 8000
@@ -275,7 +275,7 @@ class TestGrokSessionConfig:
 
         client = GrokVoiceClient(
             api_key="k",
-            model="grok-voice-think-fast-1.0",
+            model="grok-voice-think-fast-2.0",
             voice="eve",
             instructions="be terse",
         )
@@ -288,7 +288,7 @@ class TestGrokSessionConfig:
         msg = json.loads(ws.sent[0])
         assert msg["type"] == "session.update"
         sess = msg["session"]
-        assert sess["model"] == "grok-voice-think-fast-1.0"
+        assert sess["model"] == "grok-voice-think-fast-2.0"
         assert sess["voice"] == "eve"
         # xAI's session schema uses "instructions" (NOT "system_prompt")
         assert sess["instructions"] == "be terse"
@@ -481,7 +481,7 @@ class TestGrokFactory:
 
         from app.ai.grok_voice import GrokVoiceClient
         assert isinstance(client, GrokVoiceClient)
-        assert client._model == "grok-voice-think-fast-1.0"
+        assert client._model == "grok-voice-think-fast-2.0"
         assert client._voice == "eve"
         assert client._greeting == "hi"
 

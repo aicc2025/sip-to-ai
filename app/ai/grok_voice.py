@@ -34,7 +34,7 @@ class GrokVoiceClient(AiDuplexBase):
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model: str = "grok-voice-think-fast-1.0",
+        model: str = "grok-voice-think-fast-2.0",
         voice: str = "eve",
         instructions: str = "You are a helpful assistant.",
         greeting: Optional[str] = None,
@@ -44,7 +44,7 @@ class GrokVoiceClient(AiDuplexBase):
 
         Args:
             api_key: xAI API key (falls back to XAI_API_KEY env var).
-            model: Grok voice model (e.g. grok-voice-think-fast-1.0).
+            model: Grok voice model (e.g. grok-voice-think-fast-2.0).
             voice: Built-in voice (eve, ara, leo, rex, sal) or custom 8-char id.
             instructions: System prompt for the agent.
             greeting: Optional greeting played when the call connects.

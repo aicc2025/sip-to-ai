@@ -8,17 +8,17 @@ def test_openai_ai_config_default_model_is_ga_realtime() -> None:
     """The in-code default should match the current GA Realtime model."""
     from app.config import AIConfig
 
-    assert AIConfig().openai_model == "gpt-realtime"
+    assert AIConfig().openai_model == "gpt-realtime-2.1"
 
 
 def test_openai_config_load_default_model_is_ga_realtime() -> None:
-    """Config.load should fall back to gpt-realtime when OPENAI_MODEL is unset."""
+    """Config.load should fall back to gpt-realtime-2.1 when OPENAI_MODEL is unset."""
     from app.config import Config
 
     with patch.dict(os.environ, {}, clear=True):
         cfg = Config.load()
 
-    assert cfg.ai.openai_model == "gpt-realtime"
+    assert cfg.ai.openai_model == "gpt-realtime-2.1"
 
 
 def test_openai_config_load_respects_model_override() -> None:
