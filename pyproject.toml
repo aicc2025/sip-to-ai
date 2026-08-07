@@ -13,7 +13,8 @@ dependencies = [
     "numpy>=2.3.3",
     "structlog>=25.4.0",
     "python-dotenv>=1.1.1",
-    "pyyaml>=6.0.2"
+    "pyyaml>=6.0.2",
+    "audioop-lts>=0.2.1; python_version >= '3.13'"
 ]
 
 [project.optional-dependencies]
