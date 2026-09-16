@@ -20,6 +20,8 @@ This project:
 
 Simple passthrough bridge: **SIP (G.711 μ-law @ 8kHz)** ↔ **AI voice models**. OpenAI, Deepgram, and Grok support native G.711, Gemini requires PCM16 resampling (8kHz ↔ 16kHz/24kHz).
 
+**Not using an end-to-end voice model?** If you want separate ASR / LLM / TTS stages instead of a single speech-to-speech model, we **strongly recommend** [cascade-realtime-gateway](https://github.com/rasonyang/cascade-realtime-gateway) — see [Not Using an End-to-End Voice Model?](#not-using-an-end-to-end-voice-model).
+
 ## Quick Start (OpenAI Realtime)
 
 **Prerequisites:** Python 3.12+, UV package manager
@@ -76,6 +78,22 @@ Simple passthrough bridge: **SIP (G.711 μ-law @ 8kHz)** ↔ **AI voice models**
    # From FreeSWITCH/Asterisk, dial to bridge IP:port
    # Or use a SIP softphone to call sip:192.168.1.100:6060
    ```
+
+## Not Using an End-to-End Voice Model?
+
+This project bridges SIP audio to **end-to-end realtime voice models** — one speech-to-speech model does recognition, reasoning, and synthesis in a single hop.
+
+If instead you need a **cascade** — separate **ASR + LLM + TTS** stages, so each one can be chosen, swapped, or self-hosted independently — we **strongly recommend** [**cascade-realtime-gateway**](https://github.com/rasonyang/cascade-realtime-gateway).
+
+It runs a cascaded ASR → LLM → TTS pipeline behind an **OpenAI Realtime-compatible WebSocket**, so it looks like a realtime voice model to everything in front of it (put a TLS terminator in front if you need `wss://`, as the official OpenAI SDKs do), and it adds:
+
+- **Pluggable stages**: Deepgram or Qwen ASR, OpenAI or Qwen LLM, OpenAI or Qwen TTS — one provider instance each, reconfigured at runtime through an admin API
+- **Full prompts and function calling**: tools declared per session, `tool_choice` control, tool results passed back as opaque strings
+- **Server-side VAD turn detection with `interrupt_response`** for barge-in
+
+**Trade-off vs. end-to-end:** a cascade puts an ASR → LLM → TTS chain (and two extra network hops) on the response path, so it will not be as fast as a speech-to-speech model. Choose the cascade when control over each stage matters more than the last few hundred milliseconds; choose this project's end-to-end path (OpenAI Realtime, Deepgram, Gemini Live, Grok Voice) when latency is the priority.
+
+**Integration note:** cascade's protocol profile accepts and emits **PCM16 @ 24kHz only** (`audio/pcmu` is rejected), so bridging to it needs the same resampling path as the Gemini Live client (`resample_pcm16`, 8kHz ↔ 24kHz) rather than the native G.711 passthrough used for OpenAI/Deepgram/Grok. Start from `OPENAI_WS_ENDPOINT` (`app/ai/openai_realtime.py`), which is the configurable Realtime endpoint.
 
 ## Project Overview
 
