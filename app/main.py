@@ -129,6 +129,9 @@ def create_ai_client() -> AiDuplexClient:
             "Using OpenAI Realtime client",
             model=config.ai.openai_model,
             endpoint=config.ai.openai_ws_endpoint,
+            audio_format=config.ai.openai_audio_format,
+            noise_reduction=config.ai.openai_noise_reduction,
+            voice=config.ai.openai_voice or None,
             has_project=bool(config.ai.openai_project),
             has_organization=bool(config.ai.openai_organization),
             has_greeting=greeting is not None,
@@ -139,11 +142,14 @@ def create_ai_client() -> AiDuplexClient:
         client = OpenAIRealtimeClient(
             api_key=config.ai.openai_api_key,
             model=config.ai.openai_model,
+            voice=config.ai.openai_voice,
             ws_endpoint=config.ai.openai_ws_endpoint,
             project=config.ai.openai_project,
             organization=config.ai.openai_organization,
             instructions=instructions,
-            greeting=greeting
+            greeting=greeting,
+            audio_format=config.ai.openai_audio_format,
+            noise_reduction=config.ai.openai_noise_reduction
         )
         logger.info("OpenAI client instance created")
         return client

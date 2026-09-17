@@ -304,7 +304,10 @@ def resample_pcm16(data: bytes, from_rate: int, to_rate: int) -> bytes:
         h = np.sinc(norm_cutoff * n)
         h *= np.hamming(taps)
         h /= np.sum(h)
-        samples = np.convolve(samples, h, mode="same")
+        # Equivalent to mode="same", but also keeps the input length when the
+        # input is shorter than the filter (mode="same" returns max(len, taps)).
+        start = (taps - 1) // 2
+        samples = np.convolve(samples, h, mode="full")[start:start + len(samples)]
 
     # Calculate resampling ratio
     ratio = to_rate / from_rate

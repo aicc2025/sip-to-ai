@@ -322,7 +322,19 @@ It runs a cascaded ASR → LLM → TTS pipeline behind an **OpenAI Realtime-comp
 
 **Trade-off vs. end-to-end:** a cascade puts an ASR → LLM → TTS chain (and two extra network hops) on the response path, so it will not be as fast as a speech-to-speech model. Choose the cascade when control over each stage matters more than the last few hundred milliseconds; choose this project's end-to-end path (OpenAI Realtime, Deepgram, Gemini Live, Grok Voice) when latency is the priority.
 
-**Integration note:** cascade's protocol profile accepts and emits **PCM16 @ 24kHz only** (`audio/pcmu` is rejected), so bridging to it needs the same resampling path as the Gemini Live client (`resample_pcm16`, 8kHz ↔ 24kHz) rather than the native G.711 passthrough used for OpenAI/Deepgram/Grok. Start from `OPENAI_WS_ENDPOINT` (`app/ai/openai_realtime.py`), which is the configurable Realtime endpoint.
+**Integration note:** cascade's protocol profile accepts and emits **PCM16 @ 24kHz only** (`audio/pcmu` is rejected) and rejects a non-null `noise_reduction`, so point the existing OpenAI Realtime client (`AI_VENDOR=openai`) at it with PCM16 mode enabled. `OPENAI_AUDIO_FORMAT=pcm16` resamples 8kHz ↔ 24kHz (`resample_pcm16`, as in the Gemini Live client) instead of using the G.711 passthrough:
+
+```bash
+AI_VENDOR=openai
+OPENAI_WS_ENDPOINT=ws://127.0.0.1:18080/v1/realtime
+OPENAI_API_KEY=sk-test          # the gateway's REALTIME_API_KEY
+OPENAI_MODEL=qwen               # sent as ?model=; echoed only, not used for routing
+OPENAI_AUDIO_FORMAT=pcm16       # audio/pcm @ 24kHz
+OPENAI_NOISE_REDUCTION=none     # cascade only accepts null noise_reduction
+OPENAI_VOICE=                   # empty: use the gateway profile's voice
+```
+
+The greeting is first requested out-of-band (`conversation: "none"`); cascade only accepts `"auto"`, so the client resends it in-conversation when that is rejected.
 
 ## Troubleshooting
 

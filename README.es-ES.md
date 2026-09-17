@@ -322,7 +322,19 @@ Ejecuta una tubería en cascada ASR → LLM → TTS detrás de un **WebSocket co
 
 **Compromiso frente al extremo a extremo:** una cascada sitúa una cadena ASR → LLM → TTS (y dos saltos de red adicionales) en la ruta de respuesta, por lo que no será tan rápida como un modelo de voz a voz. Elige la cascada cuando el control sobre cada etapa importe más que los últimos cientos de milisegundos; elige la ruta de extremo a extremo de este proyecto (OpenAI Realtime, Deepgram, Gemini Live, Grok Voice) cuando la latencia sea la prioridad.
 
-**Nota de integración:** el perfil de protocolo de cascade solo acepta y emite **PCM16 @ 24kHz** (se rechaza `audio/pcmu`), por lo que conectarlo requiere la misma ruta de remuestreo que el cliente de Gemini Live (`resample_pcm16`, 8kHz ↔ 24kHz) en lugar del paso directo de G.711 nativo que se usa para OpenAI/Deepgram/Grok. Parte de `OPENAI_WS_ENDPOINT` (`app/ai/openai_realtime.py`), que es el endpoint Realtime configurable.
+**Nota de integración:** el perfil de protocolo de cascade solo acepta y emite **PCM16 @ 24kHz** (se rechaza `audio/pcmu`) y rechaza un `noise_reduction` distinto de null, así que apunta el cliente existente de OpenAI Realtime (`AI_VENDOR=openai`) hacia él con el modo PCM16 activado. `OPENAI_AUDIO_FORMAT=pcm16` remuestrea 8kHz ↔ 24kHz (`resample_pcm16`, como el cliente de Gemini Live) en lugar de usar el paso directo de G.711:
+
+```bash
+AI_VENDOR=openai
+OPENAI_WS_ENDPOINT=ws://127.0.0.1:18080/v1/realtime
+OPENAI_API_KEY=sk-test          # the gateway's REALTIME_API_KEY
+OPENAI_MODEL=qwen               # sent as ?model=; echoed only, not used for routing
+OPENAI_AUDIO_FORMAT=pcm16       # audio/pcm @ 24kHz
+OPENAI_NOISE_REDUCTION=none     # cascade only accepts null noise_reduction
+OPENAI_VOICE=                   # empty: use the gateway profile's voice
+```
+
+El saludo se solicita primero fuera de la conversación (`conversation: "none"`); cascade solo acepta `"auto"`, por lo que el cliente lo reenvía dentro de la conversación cuando se rechaza.
 
 ## Solución de Problemas
 
