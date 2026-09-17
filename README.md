@@ -310,31 +310,22 @@ Get your API key from [xAI Console](https://console.x.ai/).
 
 ## Not Using an End-to-End Voice Model?
 
-This project bridges SIP audio to **end-to-end realtime voice models** — one speech-to-speech model does recognition, reasoning, and synthesis in a single hop.
+This project is built for speech-to-speech models. If you want separate **ASR → LLM → TTS** stages instead, use [**cascade-realtime-gateway**](https://github.com/rasonyang/cascade-realtime-gateway). It exposes the pipeline as an OpenAI Realtime-compatible WebSocket, so sip-to-ai connects to it with the OpenAI client.
 
-If instead you need a **cascade** — separate **ASR + LLM + TTS** stages, so each one can be chosen, swapped, or self-hosted independently — we **strongly recommend** [**cascade-realtime-gateway**](https://github.com/rasonyang/cascade-realtime-gateway).
+- **Pros:** pick or self-host each stage (Deepgram / Qwen ASR, OpenAI / Qwen LLM and TTS), function calling, barge-in
+- **Cons:** higher latency than an end-to-end model
 
-It runs a cascaded ASR → LLM → TTS pipeline behind an **OpenAI Realtime-compatible WebSocket**, so it looks like a realtime voice model to everything in front of it (put a TLS terminator in front if you need `wss://`, as the official OpenAI SDKs do), and it adds:
-
-- **Pluggable stages**: Deepgram or Qwen ASR, OpenAI or Qwen LLM, OpenAI or Qwen TTS — one provider instance each, reconfigured at runtime through an admin API
-- **Full prompts and function calling**: tools declared per session, `tool_choice` control, tool results passed back as opaque strings
-- **Server-side VAD turn detection with `interrupt_response`** for barge-in
-
-**Trade-off vs. end-to-end:** a cascade puts an ASR → LLM → TTS chain (and two extra network hops) on the response path, so it will not be as fast as a speech-to-speech model. Choose the cascade when control over each stage matters more than the last few hundred milliseconds; choose this project's end-to-end path (OpenAI Realtime, Deepgram, Gemini Live, Grok Voice) when latency is the priority.
-
-**Integration note:** cascade's protocol profile accepts and emits **PCM16 @ 24kHz only** (`audio/pcmu` is rejected) and rejects a non-null `noise_reduction`, so point the existing OpenAI Realtime client (`AI_VENDOR=openai`) at it with PCM16 mode enabled. `OPENAI_AUDIO_FORMAT=pcm16` resamples 8kHz ↔ 24kHz (`resample_pcm16`, as in the Gemini Live client) instead of using the G.711 passthrough:
+Configure `.env`:
 
 ```bash
 AI_VENDOR=openai
 OPENAI_WS_ENDPOINT=ws://127.0.0.1:18080/v1/realtime
 OPENAI_API_KEY=sk-test          # the gateway's REALTIME_API_KEY
-OPENAI_MODEL=qwen               # sent as ?model=; echoed only, not used for routing
-OPENAI_AUDIO_FORMAT=pcm16       # audio/pcm @ 24kHz
-OPENAI_NOISE_REDUCTION=none     # cascade only accepts null noise_reduction
-OPENAI_VOICE=                   # empty: use the gateway profile's voice
+OPENAI_MODEL=qwen               # any value; not used for routing
+OPENAI_AUDIO_FORMAT=pcm16       # required: cascade only accepts PCM16 @ 24kHz
+OPENAI_NOISE_REDUCTION=none     # required: cascade rejects noise reduction
+OPENAI_VOICE=                   # empty: use the voice configured in the gateway
 ```
-
-The greeting is first requested out-of-band (`conversation: "none"`); cascade only accepts `"auto"`, so the client resends it in-conversation when that is rejected.
 
 ## Troubleshooting
 
