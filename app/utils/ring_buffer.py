@@ -174,6 +174,21 @@ class StreamBuffer:
         """
         return self._queue.get_nowait()
 
+    def clear(self) -> int:
+        """Drop all queued items without closing the buffer.
+
+        Returns:
+            Number of items dropped
+        """
+        dropped = 0
+        while True:
+            try:
+                self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            dropped += 1
+        return dropped
+
     async def close(self) -> None:
         """Close the buffer."""
         self._closed = True

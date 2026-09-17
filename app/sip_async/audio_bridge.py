@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from app.utils.constants import AudioConstants
+
 if TYPE_CHECKING:
     from app.bridge.audio_adapter import AudioAdapter
     from app.sip_async.rtp_session import RTPSession
@@ -21,7 +23,15 @@ class RTPAudioBridge:
     Data flow:
     - Uplink: RTP → decode G.711 → PCM16 → AudioAdapter → AI
     - Downlink: AI → AudioAdapter → PCM16 → encode G.711 → RTP
+
+    When no RTP arrives from the caller (hold, stopped media), the uplink keeps
+    feeding 20ms silence frames so the AI connection stays alive.
     """
+
+    # Frame interval (seconds)
+    FRAME_INTERVAL = AudioConstants.FRAME_MS / 1000.0
+    # Gap without caller RTP before silence is generated (tolerates jitter)
+    SILENCE_AFTER = 3 * FRAME_INTERVAL
 
     def __init__(self, rtp_session: 'RTPSession', audio_adapter: 'AudioAdapter'):
         """Initialize audio bridge.
@@ -33,13 +43,22 @@ class RTPAudioBridge:
         self.rtp = rtp_session
         self.adapter = audio_adapter
         self._running = False
+        self._stopped = False
+        self._tasks: list[asyncio.Task[None]] = []
+
+        # Barge-in: clearing the adapter downlink also clears the RTP send queue
+        self.adapter.add_downlink_clear_listener(self.rtp.clear_tx_queue)
 
         # Statistics
         self._uplink_frames = 0
         self._downlink_frames = 0
+        self._uplink_silence_frames = 0
 
     async def run(self) -> None:
         """Run bidirectional audio bridge with TaskGroup."""
+        if self._stopped:
+            return
+
         self._running = True
 
         logger.info("AudioBridge starting")
@@ -47,16 +66,16 @@ class RTPAudioBridge:
         try:
             async with asyncio.TaskGroup() as tg:
                 # Uplink: RTP → AudioAdapter
-                tg.create_task(
+                self._tasks.append(tg.create_task(
                     self._uplink_task(),
                     name="audiobridge-uplink"
-                )
+                ))
 
                 # Downlink: AudioAdapter → RTP
-                tg.create_task(
+                self._tasks.append(tg.create_task(
                     self._downlink_task(),
                     name="audiobridge-downlink"
-                )
+                ))
 
                 logger.info("AudioBridge TaskGroup started")
 
@@ -77,25 +96,56 @@ class RTPAudioBridge:
                 )
         finally:
             self._running = False
+            self._tasks.clear()
             logger.info(
                 "AudioBridge stopped",
                 uplink_frames=self._uplink_frames,
+                uplink_silence_frames=self._uplink_silence_frames,
                 downlink_frames=self._downlink_frames
             )
 
     async def _uplink_task(self) -> None:
         """Uplink: RTP → AudioAdapter → AI.
 
-        Reads PCM16 audio from RTP and feeds to AudioAdapter.
+        Reads PCM16 audio from RTP and feeds to AudioAdapter. If no RTP
+        arrives for SILENCE_AFTER seconds, a 20ms silence frame is fed every
+        frame interval until RTP resumes, so the AI keeps receiving audio.
 
         Note:
-            Runs continuously until cancelled. The async iterator
-            will be cancelled when the task is cancelled.
+            Runs continuously until cancelled.
         """
         logger.info("AudioBridge uplink task started")
 
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.SILENCE_AFTER
+        in_silence = False
+
         try:
-            async for pcm_data in self.rtp.receive_audio():
+            while True:
+                pcm_data = await self.rtp.receive_frame(
+                    timeout=max(0.0, deadline - loop.time())
+                )
+
+                if pcm_data is None:
+                    # No caller RTP in time: keep the AI fed with silence
+                    if not in_silence:
+                        in_silence = True
+                        logger.info("No caller RTP - feeding silence to AI")
+                    pcm_data = AudioConstants.SILENCE_FRAME
+                    self._uplink_silence_frames += 1
+                    deadline += self.FRAME_INTERVAL
+                    # Resync if the loop fell behind (avoid a burst of silence)
+                    if deadline < loop.time():
+                        deadline = loop.time() + self.FRAME_INTERVAL
+                else:
+                    if in_silence:
+                        in_silence = False
+                        logger.info(
+                            "Caller RTP resumed",
+                            silence_frames=self._uplink_silence_frames
+                        )
+                    deadline = loop.time() + self.SILENCE_AFTER
+
                 # Feed PCM16 @ 8kHz to AudioAdapter
                 # AudioAdapter expects 320 bytes (160 samples * 2 bytes)
                 self.adapter.on_rx_pcm16_8k(pcm_data)
@@ -165,6 +215,14 @@ class RTPAudioBridge:
             )
 
     async def stop(self) -> None:
-        """Stop the audio bridge."""
+        """Stop the audio bridge and wait for its tasks to finish."""
         self._running = False
+        self._stopped = True
         logger.info("AudioBridge stop requested")
+
+        current = asyncio.current_task()
+        tasks = [t for t in self._tasks if not t.done() and t is not current]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)

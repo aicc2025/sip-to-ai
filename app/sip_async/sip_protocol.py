@@ -21,6 +21,7 @@ class SIPMethod(Enum):
     ACK = "ACK"
     BYE = "BYE"
     CANCEL = "CANCEL"
+    OPTIONS = "OPTIONS"
 
 
 class SIPMessageType(Enum):
@@ -41,6 +42,8 @@ class SIPMessage:
 
     # Request fields
     method: Optional[SIPMethod] = None
+    # Request method as received (also set for methods not in SIPMethod)
+    method_name: str = ""
     request_uri: str = ""
 
     # Response fields
@@ -96,10 +99,12 @@ class SIPMessage:
                 self.message_type = SIPMessageType.REQUEST
                 parts = first_line.split(' ')
                 if len(parts) >= 2:
+                    self.method_name = parts[0]
                     try:
                         self.method = SIPMethod(parts[0])
                     except ValueError:
-                        logger.warning(f"Unsupported SIP method: {parts[0]}")
+                        # Answered with 405/501 by the server
+                        logger.debug(f"Unsupported SIP method: {parts[0]}")
                     self.request_uri = parts[1]
 
             # Parse headers
@@ -290,6 +295,8 @@ class SIPDialog:
         ]
 
         # Add headers
+        lines.append(f"Via: SIP/2.0/UDP {self.local_uri};branch=z9hG4bK{uuid.uuid4().hex[:16]};rport")
+        lines.append("Max-Forwards: 70")
         lines.append(f"Call-ID: {self.call_id}")
         lines.append(f"From: <sip:{self.local_uri}>;tag={self.local_tag}")
         lines.append(f"To: <sip:{self.remote_uri}>;tag={self.remote_tag}")
@@ -297,6 +304,7 @@ class SIPDialog:
         lines.append(f"Contact: <sip:{self.contact}>")
         lines.append("Content-Length: 0")
         lines.append("")
+        lines.append("")  # Header block ends with an empty line
 
         self.cseq += 1
 
@@ -334,7 +342,7 @@ class SIPProtocol(asyncio.DatagramProtocol):
             # Handle in async context with exception tracking
             task = asyncio.create_task(
                 self.server.handle_message(msg, addr),
-                name=f"sip-msg-{msg.method or 'response'}"
+                name=f"sip-msg-{msg.method_name or 'response'}"
             )
             task.add_done_callback(self._handle_message_task_done)
 

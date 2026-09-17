@@ -1,7 +1,7 @@
 """Audio adapter between SIP and AI services."""
 
 import asyncio
-from typing import Optional
+from typing import Callable, Optional
 
 import structlog
 
@@ -36,6 +36,12 @@ class AudioAdapter:
 
         # Accumulation buffer for downlink to avoid padding with zeros
         self._pending_bytes = b''
+
+        # Callbacks run when queued downlink audio is dropped (barge-in), so
+        # transport-side buffers (e.g. the RTP send queue) are cleared as well
+        self._downlink_clear_listeners: list[Callable[[], int]] = []
+        # Incremented by clear_downlink(); a feed in progress stops when it changes
+        self._clear_generation = 0
 
         # Stats
         self._frames_received = 0
@@ -121,6 +127,8 @@ class AudioAdapter:
             audio_chunk: Audio chunk from AI (PCM16 @ 8kHz, variable size from AI clients)
         """
         try:
+            generation = self._clear_generation
+
             # Append to pending buffer
             self._pending_bytes += audio_chunk
 
@@ -130,6 +138,11 @@ class AudioAdapter:
             while offset + AudioConstants.PCM16_FRAME_SIZE <= len(self._pending_bytes):
                 frame = self._pending_bytes[offset:offset + AudioConstants.PCM16_FRAME_SIZE]
                 await self._downlink_stream.send(frame)
+                if generation != self._clear_generation:
+                    # Barge-in cleared the downlink while this chunk was being
+                    # queued: drop the rest of it (and the frame just queued)
+                    self._downlink_stream.clear()
+                    return
                 offset += AudioConstants.PCM16_FRAME_SIZE
                 frames_sent += 1
 
@@ -165,6 +178,35 @@ class AudioAdapter:
         """
         return await self._downlink_stream.receive()
 
+    def add_downlink_clear_listener(self, listener: Callable[[], int]) -> None:
+        """Register a callback that drops transport-side downlink audio.
+
+        Args:
+            listener: Callable returning the number of frames it dropped
+        """
+        self._downlink_clear_listeners.append(listener)
+
+    def clear_downlink(self) -> int:
+        """Drop all queued downlink audio (AI → SIP) for barge-in.
+
+        Clears the partial-frame accumulator, the downlink stream and every
+        registered transport-side buffer.
+
+        Returns:
+            Total number of frames dropped
+        """
+        self._clear_generation += 1
+        self._pending_bytes = b''
+        dropped = self._downlink_stream.clear()
+
+        for listener in self._downlink_clear_listeners:
+            try:
+                dropped += listener()
+            except Exception as e:
+                self._logger.error(f"Downlink clear listener error: {e}")
+
+        return dropped
+
     def get_stats(self) -> dict:
         """Get bridge statistics.
 
@@ -188,7 +230,11 @@ class AudioAdapter:
                 # Pad final incomplete frame with silence
                 padding_size = AudioConstants.PCM16_FRAME_SIZE - len(self._pending_bytes)
                 padded_frame = self._pending_bytes + b'\x00' * padding_size
-                await self._downlink_stream.send(padded_frame)
+                try:
+                    # Never block on close: the downlink consumer may already be gone
+                    self._downlink_stream.send_nowait(padded_frame)
+                except asyncio.QueueFull:
+                    pass
                 self._logger.debug(
                     "Flushed final incomplete frame",
                     original=len(self._pending_bytes),

@@ -56,7 +56,7 @@ import structlog
 import websockets
 from websockets.client import WebSocketClientProtocol
 
-from app.ai.duplex_base import AiDuplexBase, AiEvent, AiEventType
+from app.ai.duplex_base import AiDuplexBase, AiEvent, AiEventType, AudioChunkQueue, describe_error
 from app.utils.codec import Codec, resample_pcm16
 
 # Supported values for the audio_format constructor argument (OPENAI_AUDIO_FORMAT)
@@ -140,8 +140,9 @@ class OpenAIRealtimeClient(AiDuplexBase):
         self._ws: Optional[WebSocketClientProtocol] = None
         self._ws_url = ws_endpoint.rstrip("/")
 
-        # Event queues (using asyncio Queues)
-        self._audio_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=100)
+        # Audio never blocks the WebSocket reader (see AudioChunkQueue); events
+        # are bounded and drop the oldest entry when full
+        self._audio_queue = AudioChunkQueue()
         self._event_queue: asyncio.Queue[AiEvent] = asyncio.Queue(maxsize=100)
 
         # Control
@@ -226,7 +227,7 @@ class OpenAIRealtimeClient(AiDuplexBase):
 
         except Exception as e:
             self._connected = False
-            raise ConnectionError(f"Failed to connect: {e}")
+            raise ConnectionError(f"Failed to connect to {self._ws_url}: {describe_error(e)}") from e
 
     async def close(self) -> None:
         """Close connection."""
@@ -515,6 +516,7 @@ class OpenAIRealtimeClient(AiDuplexBase):
         while not self._stop_event.is_set():
             try:
                 message = await self._ws.recv()
+                self._mark_received()
                 data = json.loads(message)
 
                 await self._process_message(data)
@@ -527,10 +529,7 @@ class OpenAIRealtimeClient(AiDuplexBase):
                     type=AiEventType.DISCONNECTED,
                     timestamp=time.time()
                 )
-                try:
-                    self._event_queue.put_nowait(event)
-                except asyncio.QueueFull:
-                    self._logger.debug("Event queue full, dropping disconnect event")
+                self._emit_event(event)
                 try:
                     self._audio_queue.put_nowait(b"")
                 except asyncio.QueueFull:
@@ -552,7 +551,7 @@ class OpenAIRealtimeClient(AiDuplexBase):
             # Signal that session is created
             self._session_created_event.set()
 
-            await self._event_queue.put(
+            self._emit_event(
                 AiEvent(
                     type=AiEventType.CONNECTED,
                     data=data.get("session"),
@@ -562,14 +561,19 @@ class OpenAIRealtimeClient(AiDuplexBase):
 
         elif msg_type == "session.updated":
             session_data = data.get("session", {})
-            # Log transcription config
-            transcription = session_data.get("input_audio_transcription")
-            self._logger.info(f"Session updated - input_audio_transcription: {transcription}")
+            # Log transcription config (GA: session.audio.input.transcription;
+            # beta: session.input_audio_transcription)
+            audio_input = (session_data.get("audio") or {}).get("input") or {}
+            if "transcription" in audio_input:
+                transcription = audio_input.get("transcription")
+            else:
+                transcription = session_data.get("input_audio_transcription")
+            self._logger.info(f"Session updated - input transcription: {transcription}")
 
             # Signal that session.updated received (for connect() to proceed)
             self._session_updated_event.set()
 
-            await self._event_queue.put(
+            self._emit_event(
                 AiEvent(
                     type=AiEventType.SESSION_UPDATED,
                     data=session_data,
@@ -579,7 +583,7 @@ class OpenAIRealtimeClient(AiDuplexBase):
 
         elif msg_type == "input_audio_buffer.speech_started":
             # User started speaking - this is our barge-in signal
-            await self._event_queue.put(
+            self._emit_event(
                 AiEvent(
                     type=AiEventType.TRANSCRIPT_PARTIAL,
                     data={"event": "speech_started"},
@@ -588,7 +592,7 @@ class OpenAIRealtimeClient(AiDuplexBase):
             )
 
         elif msg_type == "input_audio_buffer.speech_stopped":
-            await self._event_queue.put(
+            self._emit_event(
                 AiEvent(
                     type=AiEventType.TRANSCRIPT_PARTIAL,
                     data={"event": "speech_stopped"},
@@ -600,7 +604,7 @@ class OpenAIRealtimeClient(AiDuplexBase):
             # Incremental transcription results
             delta_text = data.get("delta")
             self._logger.info(f"🎤 Transcription delta: {delta_text}")
-            await self._event_queue.put(
+            self._emit_event(
                 AiEvent(
                     type=AiEventType.TRANSCRIPT_PARTIAL,
                     data={"text": delta_text},
@@ -612,7 +616,7 @@ class OpenAIRealtimeClient(AiDuplexBase):
             # Final transcription result
             transcript = data.get("transcript")
             self._logger.info(f"✅ Transcription completed: {transcript}")
-            await self._event_queue.put(
+            self._emit_event(
                 AiEvent(
                     type=AiEventType.TRANSCRIPT_FINAL,
                     data={"text": transcript},
@@ -620,12 +624,13 @@ class OpenAIRealtimeClient(AiDuplexBase):
                 )
             )
 
-        elif msg_type == "response.audio_transcript.delta":
-            # AI response transcript (what the AI is saying)
+        elif msg_type in ("response.output_audio_transcript.delta", "response.audio_transcript.delta"):
+            # AI response transcript (what the AI is saying). GA servers send
+            # response.output_audio_transcript.*; beta servers response.audio_transcript.*
             delta_text = data.get("delta")
             self._logger.info(f"🤖 AI transcript delta: {delta_text}")
 
-        elif msg_type == "response.audio_transcript.done":
+        elif msg_type in ("response.output_audio_transcript.done", "response.audio_transcript.done"):
             # AI response transcript completed
             transcript = data.get("transcript")
             self._logger.info(f"✅ AI transcript done: {transcript}")
@@ -647,7 +652,7 @@ class OpenAIRealtimeClient(AiDuplexBase):
                 chunk_size_pcm16 = len(pcm16_8k)
                 duration_ms = (chunk_size_pcm16 / 2 / self._sip_sample_rate) * 1000
 
-                await self._audio_queue.put(pcm16_8k)
+                self._queue_audio(pcm16_8k)
                 self._audio_chunks_received += 1
 
                 if self._audio_chunks_received % 10 == 0:
@@ -686,7 +691,7 @@ class OpenAIRealtimeClient(AiDuplexBase):
             # Surface to connect() so it fails fast instead of timing out
             if not self._session_updated_event.is_set():
                 self._connect_error = err_message
-            await self._event_queue.put(
+            self._emit_event(
                 AiEvent(
                     type=AiEventType.ERROR,
                     error=err_message,

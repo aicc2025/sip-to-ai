@@ -24,7 +24,7 @@ import structlog
 import websockets
 from websockets.client import WebSocketClientProtocol
 
-from app.ai.duplex_base import AiDuplexBase, AiEvent, AiEventType
+from app.ai.duplex_base import AiDuplexBase, AiEvent, AiEventType, AudioChunkQueue, describe_error
 from app.utils.codec import Codec
 
 
@@ -68,7 +68,8 @@ class GrokVoiceClient(AiDuplexBase):
         self._ws: Optional[WebSocketClientProtocol] = None
         self._ws_url = ws_endpoint
 
-        self._audio_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=100)
+        # Audio never blocks the WebSocket reader (see AudioChunkQueue)
+        self._audio_queue = AudioChunkQueue()
         self._event_queue: asyncio.Queue[AiEvent] = asyncio.Queue(maxsize=100)
 
         self._connected = False
@@ -120,7 +121,7 @@ class GrokVoiceClient(AiDuplexBase):
             # current versions. Accept either as the ready signal so we tolerate
             # future protocol updates without a code change.
             self._session_created_event.set()
-            await self._event_queue.put(
+            self._emit_event(
                 AiEvent(
                     type=AiEventType.CONNECTED,
                     data=data.get("session") or data.get("conversation"),
@@ -134,7 +135,7 @@ class GrokVoiceClient(AiDuplexBase):
 
         elif msg_type == "session.updated":
             self._session_updated_event.set()
-            await self._event_queue.put(
+            self._emit_event(
                 AiEvent(
                     type=AiEventType.SESSION_UPDATED,
                     data=data.get("session", {}),
@@ -143,7 +144,7 @@ class GrokVoiceClient(AiDuplexBase):
             )
 
         elif msg_type == "input_audio_buffer.speech_started":
-            await self._event_queue.put(
+            self._emit_event(
                 AiEvent(
                     type=AiEventType.TRANSCRIPT_PARTIAL,
                     data={"event": "speech_started"},
@@ -152,7 +153,7 @@ class GrokVoiceClient(AiDuplexBase):
             )
 
         elif msg_type == "input_audio_buffer.speech_stopped":
-            await self._event_queue.put(
+            self._emit_event(
                 AiEvent(
                     type=AiEventType.TRANSCRIPT_PARTIAL,
                     data={"event": "speech_stopped"},
@@ -163,7 +164,7 @@ class GrokVoiceClient(AiDuplexBase):
         elif msg_type == "conversation.item.input_audio_transcription.completed":
             transcript = data.get("transcript")
             self._logger.info("✅ User transcript", text=transcript)
-            await self._event_queue.put(
+            self._emit_event(
                 AiEvent(
                     type=AiEventType.TRANSCRIPT_FINAL,
                     data={"text": transcript},
@@ -176,7 +177,7 @@ class GrokVoiceClient(AiDuplexBase):
             if audio_b64:
                 ulaw = base64.b64decode(audio_b64)
                 pcm16 = Codec.ulaw_to_pcm16(ulaw)
-                await self._audio_queue.put(pcm16)
+                self._queue_audio(pcm16)
                 self._audio_chunks_received += 1
                 if self._audio_chunks_received % 10 == 0:
                     self._logger.info(
@@ -194,7 +195,7 @@ class GrokVoiceClient(AiDuplexBase):
 
         elif msg_type == "error":
             err = data.get("error", {})
-            await self._event_queue.put(
+            self._emit_event(
                 AiEvent(
                     type=AiEventType.ERROR,
                     error=err.get("message"),
@@ -308,7 +309,7 @@ class GrokVoiceClient(AiDuplexBase):
 
         except Exception as e:
             self._connected = False
-            raise ConnectionError(f"Failed to connect: {e}") from e
+            raise ConnectionError(f"Failed to connect to {self._ws_url}: {describe_error(e)}") from e
 
     async def close(self) -> None:
         """Close the Grok WebSocket and cancel background tasks."""
@@ -342,18 +343,14 @@ class GrokVoiceClient(AiDuplexBase):
         while not self._stop_event.is_set():
             try:
                 message = await self._ws.recv()
+                self._mark_received()
                 data = json.loads(message)
                 await self._process_message(data)
             except websockets.exceptions.ConnectionClosed:
                 self._logger.warning("Grok WebSocket closed")
                 self._connected = False
                 self._stop_event.set()
-                try:
-                    self._event_queue.put_nowait(
-                        AiEvent(type=AiEventType.DISCONNECTED, timestamp=time.time())
-                    )
-                except asyncio.QueueFull:
-                    pass
+                self._emit_event(AiEvent(type=AiEventType.DISCONNECTED, timestamp=time.time()))
                 try:
                     self._audio_queue.put_nowait(b"")
                 except asyncio.QueueFull:

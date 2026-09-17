@@ -11,6 +11,17 @@ import structlog
 
 logger = structlog.get_logger(__name__)
 
+# Media direction attributes (RFC 3264)
+MEDIA_DIRECTIONS = ("sendrecv", "sendonly", "recvonly", "inactive")
+
+# Direction to answer for each offered direction (RFC 3264 section 6.1)
+_ANSWER_DIRECTIONS = {
+    "sendrecv": "sendrecv",
+    "sendonly": "recvonly",
+    "recvonly": "sendonly",
+    "inactive": "inactive",
+}
+
 
 @dataclass
 class SDPMedia:
@@ -23,6 +34,7 @@ class SDPMedia:
     # Optional attributes
     rtpmap: dict[int, str] = field(default_factory=dict)  # {PT: "codec/rate"}
     connection: Optional[str] = None  # c= line override
+    direction: Optional[str] = None  # a=sendrecv/sendonly/recvonly/inactive
 
 
 @dataclass
@@ -40,6 +52,7 @@ class SDPSession:
 
     session_name: str = "SIP-to-AI Session"
     connection: Optional[str] = None  # c= line
+    direction: Optional[str] = None  # session-level a=sendrecv/...
 
     # Time
     time_start: int = 0
@@ -127,6 +140,13 @@ def parse_sdp(sdp_body: str) -> SDPSession:
                     session.media.append(media)
                     current_media = media
 
+            elif field_type == 'a' and field_value in MEDIA_DIRECTIONS:
+                # Direction attribute (media-level overrides session-level)
+                if current_media:
+                    current_media.direction = field_value
+                else:
+                    session.direction = field_value
+
             elif field_type == 'a' and current_media:
                 # Attribute
                 if field_value.startswith('rtpmap:'):
@@ -148,7 +168,9 @@ def build_sdp(
     local_ip: str,
     local_port: int,
     session_id: Optional[int] = None,
-    payload_types: Optional[list[int]] = None
+    payload_types: Optional[list[int]] = None,
+    session_version: Optional[int] = None,
+    direction: str = "sendrecv"
 ) -> str:
     """Build SDP for audio session with G.711.
 
@@ -157,6 +179,8 @@ def build_sdp(
         local_port: Local RTP port
         session_id: Session ID (random if None)
         payload_types: Payload types to offer (defaults to [0, 8] for PCMU/PCMA)
+        session_version: o= session version (defaults to session_id)
+        direction: Media direction attribute
 
     Returns:
         SDP string
@@ -166,12 +190,15 @@ def build_sdp(
     if session_id is None:
         session_id = random.randint(100000, 999999)
 
+    if session_version is None:
+        session_version = session_id
+
     if payload_types is None:
         payload_types = [0, 8]  # PCMU, PCMA
 
     sdp_lines = [
         "v=0",
-        f"o=sip-to-ai {session_id} {session_id} IN IP4 {local_ip}",
+        f"o=sip-to-ai {session_id} {session_version} IN IP4 {local_ip}",
         "s=SIP-to-AI Audio Session",
         f"c=IN IP4 {local_ip}",
         "t=0 0",
@@ -189,8 +216,8 @@ def build_sdp(
         if pt in codec_map:
             sdp_lines.append(f"a=rtpmap:{pt} {codec_map[pt]}")
 
-    # Add sendrecv attribute
-    sdp_lines.append("a=sendrecv")
+    # Add direction attribute
+    sdp_lines.append(f"a={direction}")
 
     return '\r\n'.join(sdp_lines) + '\r\n'
 
@@ -238,19 +265,50 @@ def get_supported_codecs(sdp: SDPSession) -> list[int]:
         sdp: Parsed SDP session
 
     Returns:
-        List of payload types we support (intersection with offer)
+        Payload types we support, in the order of the offer (the offerer's
+        preference, RFC 3264 section 6.1)
     """
-    supported_pts = {0, 8}  # PCMU, PCMA
-    offered_pts: set[int] = set()
+    supported_pts = (0, 8)  # PCMU, PCMA
+    result: list[int] = []
 
     for media in sdp.media:
         if media.media_type == "audio":
-            offered_pts.update(media.formats)
-
-    # Return intersection in order of preference (PCMU first)
-    result = []
-    for pt in [0, 8]:
-        if pt in offered_pts:
-            result.append(pt)
+            for pt in media.formats:
+                if pt in supported_pts and pt not in result:
+                    result.append(pt)
 
     return result
+
+
+def select_codec(sdp: SDPSession) -> Optional[int]:
+    """Select the single audio codec to answer with.
+
+    Only G.711 is supported, so telephone-event is never answered (DTMF is
+    not handled and RTP with other payload types is ignored).
+
+    Args:
+        sdp: Parsed SDP offer
+
+    Returns:
+        Payload type (0 = PCMU, 8 = PCMA), or None if no supported codec is offered
+    """
+    codecs = get_supported_codecs(sdp)
+    return codecs[0] if codecs else None
+
+
+def get_answer_direction(sdp: SDPSession) -> str:
+    """Return the media direction to answer with for an SDP offer.
+
+    Args:
+        sdp: Parsed SDP offer
+
+    Returns:
+        Direction attribute value (e.g. "recvonly" for a "sendonly" hold offer)
+    """
+    offered = sdp.direction or "sendrecv"
+    for media in sdp.media:
+        if media.media_type == "audio":
+            if media.direction:
+                offered = media.direction
+            break
+    return _ANSWER_DIRECTIONS.get(offered, "sendrecv")
