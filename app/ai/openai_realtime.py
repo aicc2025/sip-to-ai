@@ -1,15 +1,20 @@
 """OpenAI Realtime API adapter.
 
-Simplified integration using G.711 μ-law @ 8kHz (native OpenAI support):
+Default integration uses G.711 μ-law @ 8kHz (native OpenAI support):
 
 1. WebSocket connection to wss://api.openai.com/v1/realtime
 2. Session configuration with semantic VAD and barge-in
 3. G.711 μ-law audio streaming (no resampling needed)
 4. Event handling for transcription and errors
 
-Audio Flow:
+Audio Flow (audio_format="pcmu", default):
 - Input: PCM16 @ 8kHz → G.711 μ-law @ 8kHz → OpenAI
 - Output: OpenAI → G.711 μ-law @ 8kHz → PCM16 @ 8kHz
+
+Audio Flow (audio_format="pcm16", for Realtime-compatible gateways that only
+accept audio/pcm @ 24kHz, e.g. cascade-realtime-gateway):
+- Input: PCM16 @ 8kHz → resample → PCM16 @ 24kHz → OpenAI
+- Output: OpenAI → PCM16 @ 24kHz → resample → PCM16 @ 8kHz
 
 Session configuration (new schema):
 {
@@ -51,12 +56,19 @@ import structlog
 import websockets
 from websockets.client import WebSocketClientProtocol
 
-from app.ai.duplex_base import AiDuplexBase, AiEvent, AiEventType
-from app.utils.codec import Codec
+from app.ai.duplex_base import AiDuplexBase, AiEvent, AiEventType, AudioChunkQueue, describe_error
+from app.utils.codec import Codec, resample_pcm16
+
+# Supported values for the audio_format constructor argument (OPENAI_AUDIO_FORMAT)
+AUDIO_FORMATS = ("pcmu", "pcm16")
+# Supported values for the noise_reduction constructor argument (OPENAI_NOISE_REDUCTION)
+NOISE_REDUCTION_MODES = ("near_field", "far_field", "none")
 
 
 class OpenAIRealtimeClient(AiDuplexBase):
     """OpenAI Realtime API client."""
+
+    PCM16_SAMPLE_RATE = 24000  # audio/pcm is always 24kHz in the Realtime GA API
 
     def __init__(
         self,
@@ -67,7 +79,9 @@ class OpenAIRealtimeClient(AiDuplexBase):
         project: Optional[str] = None,
         organization: Optional[str] = None,
         instructions: str = "You are a helpful assistant.",
-        greeting: Optional[str] = None
+        greeting: Optional[str] = None,
+        audio_format: str = "pcmu",
+        noise_reduction: str = "near_field"
     ) -> None:
         """Initialize OpenAI Realtime client.
 
@@ -80,17 +94,34 @@ class OpenAIRealtimeClient(AiDuplexBase):
             organization: Optional OpenAI organization id for scoped model access
             instructions: System instructions/prompt for the AI
             greeting: Optional greeting message to play when call connects
+            audio_format: "pcmu" (G.711 μ-law @ 8kHz, default) or "pcm16"
+                (PCM16 @ 24kHz with 8kHz ↔ 24kHz resampling)
+            noise_reduction: "near_field" (default), "far_field", or "none"
+                (sends null, which disables input noise reduction)
 
         Note:
-            - Uses G.711 μ-law @ 8kHz (native OpenAI support)
-            - No resampling needed (same as SIP/Deepgram)
-            - Direct passthrough from SIP → OpenAI → SIP
+            - "pcmu" is a direct passthrough SIP → OpenAI → SIP (no resampling)
+            - "pcm16" is required by gateways that reject audio/pcmu
         """
+        if audio_format not in AUDIO_FORMATS:
+            raise ValueError(
+                f"audio_format must be one of {AUDIO_FORMATS}, got: {audio_format!r}"
+            )
+        if noise_reduction not in NOISE_REDUCTION_MODES:
+            raise ValueError(
+                f"noise_reduction must be one of {NOISE_REDUCTION_MODES}, got: {noise_reduction!r}"
+            )
+
         # OpenAI Realtime API configuration
-        # Using G.711 μ-law (audio/pcmu) @ 8kHz - native OpenAI support
         self._sip_sample_rate = 8000  # SIP uses 8kHz
-        self._openai_sample_rate = 8000  # OpenAI Realtime uses 8kHz for G.711 μ-law
-        self._audio_format = "audio/pcmu"  # G.711 μ-law format
+        self._pcm16_mode = audio_format == "pcm16"
+        if self._pcm16_mode:
+            self._openai_sample_rate = self.PCM16_SAMPLE_RATE
+            self._audio_format = "audio/pcm"  # PCM16 little-endian @ 24kHz
+        else:
+            self._openai_sample_rate = 8000  # G.711 μ-law is 8kHz
+            self._audio_format = "audio/pcmu"  # G.711 μ-law format
+        self._noise_reduction = noise_reduction
         self._frame_ms = 20
         self._sample_rate = self._sip_sample_rate  # Base class expects this
 
@@ -109,8 +140,9 @@ class OpenAIRealtimeClient(AiDuplexBase):
         self._ws: Optional[WebSocketClientProtocol] = None
         self._ws_url = ws_endpoint.rstrip("/")
 
-        # Event queues (using asyncio Queues)
-        self._audio_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=100)
+        # Audio never blocks the WebSocket reader (see AudioChunkQueue); events
+        # are bounded and drop the oldest entry when full
+        self._audio_queue = AudioChunkQueue()
         self._event_queue: asyncio.Queue[AiEvent] = asyncio.Queue(maxsize=100)
 
         # Control
@@ -123,6 +155,13 @@ class OpenAIRealtimeClient(AiDuplexBase):
         # Stats for debugging
         self._audio_frames_sent = 0
         self._audio_chunks_received = 0
+
+        # pcm16 mode: 24kHz bytes not yet resampled. Only whole 3-sample groups
+        # (6 bytes) are resampled so 24kHz → 8kHz never drops fractional samples
+        # between chunks and every emitted chunk is whole 16-bit samples.
+        self._downlink_pcm24k_pending = b""
+        # Greeting is first sent out-of-band; set while a fallback is still possible
+        self._greeting_out_of_band_pending = False
 
         self._logger = structlog.get_logger(__name__)
 
@@ -146,6 +185,7 @@ class OpenAIRealtimeClient(AiDuplexBase):
                 )
 
             self._connected = True
+            self._downlink_pcm24k_pending = b""
             self._stop_event.clear()
             self._session_created_event.clear()
             self._session_updated_event.clear()
@@ -187,7 +227,7 @@ class OpenAIRealtimeClient(AiDuplexBase):
 
         except Exception as e:
             self._connected = False
-            raise ConnectionError(f"Failed to connect: {e}")
+            raise ConnectionError(f"Failed to connect to {self._ws_url}: {describe_error(e)}") from e
 
     async def close(self) -> None:
         """Close connection."""
@@ -217,7 +257,8 @@ class OpenAIRealtimeClient(AiDuplexBase):
     async def send_pcm16_8k(self, frame_20ms: bytes) -> None:
         """Send PCM16 @ 8kHz audio frame to OpenAI.
 
-        Converts PCM16 → G.711 μ-law @ 8kHz before sending.
+        Converts PCM16 → G.711 μ-law @ 8kHz ("pcmu") or resamples
+        PCM16 8kHz → 24kHz ("pcm16") before sending.
 
         Args:
             frame_20ms: PCM16 audio frame @ 8kHz (320 bytes)
@@ -229,8 +270,14 @@ class OpenAIRealtimeClient(AiDuplexBase):
         if len(frame_20ms) != 320:
             raise ValueError(f"Expected 320 bytes PCM16 @ 8kHz, got {len(frame_20ms)}")
 
-        # Convert PCM16 → G.711 μ-law (320 bytes → 160 bytes)
-        g711_ulaw = Codec.pcm16_to_ulaw(frame_20ms)
+        if self._pcm16_mode:
+            # Resample PCM16 8kHz → 24kHz (320 bytes → 960 bytes)
+            payload = resample_pcm16(frame_20ms, self._sip_sample_rate, self._openai_sample_rate)
+            expected_output = 960
+        else:
+            # Convert PCM16 → G.711 μ-law (320 bytes → 160 bytes)
+            payload = Codec.pcm16_to_ulaw(frame_20ms)
+            expected_output = 160
 
         # Log first few frames for debugging
         if self._audio_frames_sent < 3:
@@ -238,9 +285,10 @@ class OpenAIRealtimeClient(AiDuplexBase):
             samples_pcm16 = np.frombuffer(frame_20ms, dtype=np.int16)
             self._logger.info(
                 f"📤 Frame #{self._audio_frames_sent + 1}",
+                audio_format=self._audio_format,
                 input_size=len(frame_20ms),
-                output_size=len(g711_ulaw),
-                expected_output=160,  # 160 bytes G.711
+                output_size=len(payload),
+                expected_output=expected_output,
                 pcm16_min=int(samples_pcm16.min()),
                 pcm16_max=int(samples_pcm16.max())
             )
@@ -248,7 +296,7 @@ class OpenAIRealtimeClient(AiDuplexBase):
         # Send audio append message (base64 encoded as per OpenAI Realtime API spec)
         message = {
             "type": "input_audio_buffer.append",
-            "audio": base64.b64encode(g711_ulaw).decode("utf-8")
+            "audio": base64.b64encode(payload).decode("utf-8")
         }
 
         await self._ws.send(json.dumps(message))
@@ -347,9 +395,24 @@ class OpenAIRealtimeClient(AiDuplexBase):
                     raise ConnectionError(f"OpenAI rejected {name}: {self._connect_error}")
                 await asyncio.sleep(0.05)
 
-    async def _configure_session(self) -> None:
-        """Configure initial session using new schema."""
-        config = {
+    def _audio_format_payload(self) -> Dict:
+        """Return the session audio format object for the configured audio format."""
+        if self._pcm16_mode:
+            return {"type": self._audio_format, "rate": self._openai_sample_rate}
+        return {"type": self._audio_format}
+
+    def _build_session_config(self) -> Dict:
+        """Build the initial session.update event (GA schema)."""
+        noise_reduction: Optional[Dict] = None
+        if self._noise_reduction != "none":
+            noise_reduction = {"type": self._noise_reduction}
+
+        output: Dict = {"format": self._audio_format_payload()}
+        # An empty voice leaves the server-side default voice in place
+        if self._voice:
+            output["voice"] = self._voice
+
+        return {
             "type": "session.update",
             "session": {
                 "type": "realtime",
@@ -357,37 +420,33 @@ class OpenAIRealtimeClient(AiDuplexBase):
                 "output_modalities": ["audio"],
                 "audio": {
                     "input": {
-                        "format": {
-                            "type": self._audio_format
-                        },
+                        "format": self._audio_format_payload(),
                         "transcription": {
                             "model": "whisper-1"
                         },
-                        "noise_reduction": {
-                            "type": "near_field"
-                        },
+                        "noise_reduction": noise_reduction,
                         "turn_detection": {
                             "type": "semantic_vad",
                             "create_response": True,
                             "eagerness": "medium"
                         }
                     },
-                    "output": {
-                        "format": {
-                            "type": self._audio_format
-                        },
-                        "voice": self._voice
-                    }
+                    "output": output
                 },
                 "instructions": self._instructions
             }
         }
+
+    async def _configure_session(self) -> None:
+        """Configure initial session using new schema."""
+        config = self._build_session_config()
 
         self._logger.info(
             "Configuring OpenAI session (new schema)",
             audio_format=self._audio_format,
             input_sample_rate=self._openai_sample_rate,
             voice=self._voice,
+            noise_reduction=self._noise_reduction,
             has_greeting=self._greeting is not None,
             instructions_length=len(self._instructions)
         )
@@ -397,25 +456,57 @@ class OpenAIRealtimeClient(AiDuplexBase):
 
         await self._ws.send(json.dumps(config))
 
-    async def _send_greeting(self) -> None:
-        """Send greeting message to OpenAI."""
+    async def _send_greeting(self, out_of_band: bool = True) -> None:
+        """Send greeting message to OpenAI.
+
+        Args:
+            out_of_band: Send with conversation "none" so the greeting is not
+                added to the conversation. Gateways that only accept "auto"
+                reject this; _process_message then resends with out_of_band=False.
+        """
         if not self._ws or not self._greeting:
             return
 
-        greeting_request = {
-            "type": "response.create",
-            "response": {
-                "instructions": self._greeting,
-                "conversation": "none",
-                "output_modalities": ["audio"],
-                "metadata": {
-                    "response_purpose": "greeting"
-                }
+        response: Dict = {
+            "instructions": self._greeting,
+            "output_modalities": ["audio"],
+            "metadata": {
+                "response_purpose": "greeting"
             }
         }
+        if out_of_band:
+            response["conversation"] = "none"
 
+        greeting_request = {
+            "type": "response.create",
+            "response": response
+        }
+
+        self._greeting_out_of_band_pending = out_of_band
         await self._ws.send(json.dumps(greeting_request))
-        self._logger.info("Greeting request sent", greeting_preview=self._greeting[:50])
+        self._logger.info(
+            "Greeting request sent",
+            out_of_band=out_of_band,
+            greeting_preview=self._greeting[:50]
+        )
+
+    def _convert_downlink_audio(self, audio_bytes: bytes) -> bytes:
+        """Convert a decoded output audio delta to PCM16 @ 8kHz.
+
+        Returns b"" when a pcm16 chunk is too short to yield a whole 8kHz sample;
+        the remainder is kept and prepended to the next chunk.
+        """
+        if not self._pcm16_mode:
+            # G.711 μ-law @ 8kHz → PCM16 @ 8kHz
+            return Codec.ulaw_to_pcm16(audio_bytes)
+
+        data = self._downlink_pcm24k_pending + audio_bytes
+        group = 2 * (self._openai_sample_rate // self._sip_sample_rate)  # 6 bytes
+        usable = len(data) - (len(data) % group)
+        self._downlink_pcm24k_pending = data[usable:]
+        if usable == 0:
+            return b""
+        return resample_pcm16(data[:usable], self._openai_sample_rate, self._sip_sample_rate)
 
     async def _message_handler(self) -> None:
         """Handle WebSocket messages."""
@@ -425,6 +516,7 @@ class OpenAIRealtimeClient(AiDuplexBase):
         while not self._stop_event.is_set():
             try:
                 message = await self._ws.recv()
+                self._mark_received()
                 data = json.loads(message)
 
                 await self._process_message(data)
@@ -437,10 +529,7 @@ class OpenAIRealtimeClient(AiDuplexBase):
                     type=AiEventType.DISCONNECTED,
                     timestamp=time.time()
                 )
-                try:
-                    self._event_queue.put_nowait(event)
-                except asyncio.QueueFull:
-                    self._logger.debug("Event queue full, dropping disconnect event")
+                self._emit_event(event)
                 try:
                     self._audio_queue.put_nowait(b"")
                 except asyncio.QueueFull:
@@ -462,7 +551,7 @@ class OpenAIRealtimeClient(AiDuplexBase):
             # Signal that session is created
             self._session_created_event.set()
 
-            await self._event_queue.put(
+            self._emit_event(
                 AiEvent(
                     type=AiEventType.CONNECTED,
                     data=data.get("session"),
@@ -472,14 +561,19 @@ class OpenAIRealtimeClient(AiDuplexBase):
 
         elif msg_type == "session.updated":
             session_data = data.get("session", {})
-            # Log transcription config
-            transcription = session_data.get("input_audio_transcription")
-            self._logger.info(f"Session updated - input_audio_transcription: {transcription}")
+            # Log transcription config (GA: session.audio.input.transcription;
+            # beta: session.input_audio_transcription)
+            audio_input = (session_data.get("audio") or {}).get("input") or {}
+            if "transcription" in audio_input:
+                transcription = audio_input.get("transcription")
+            else:
+                transcription = session_data.get("input_audio_transcription")
+            self._logger.info(f"Session updated - input transcription: {transcription}")
 
             # Signal that session.updated received (for connect() to proceed)
             self._session_updated_event.set()
 
-            await self._event_queue.put(
+            self._emit_event(
                 AiEvent(
                     type=AiEventType.SESSION_UPDATED,
                     data=session_data,
@@ -489,7 +583,7 @@ class OpenAIRealtimeClient(AiDuplexBase):
 
         elif msg_type == "input_audio_buffer.speech_started":
             # User started speaking - this is our barge-in signal
-            await self._event_queue.put(
+            self._emit_event(
                 AiEvent(
                     type=AiEventType.TRANSCRIPT_PARTIAL,
                     data={"event": "speech_started"},
@@ -498,7 +592,7 @@ class OpenAIRealtimeClient(AiDuplexBase):
             )
 
         elif msg_type == "input_audio_buffer.speech_stopped":
-            await self._event_queue.put(
+            self._emit_event(
                 AiEvent(
                     type=AiEventType.TRANSCRIPT_PARTIAL,
                     data={"event": "speech_stopped"},
@@ -510,7 +604,7 @@ class OpenAIRealtimeClient(AiDuplexBase):
             # Incremental transcription results
             delta_text = data.get("delta")
             self._logger.info(f"🎤 Transcription delta: {delta_text}")
-            await self._event_queue.put(
+            self._emit_event(
                 AiEvent(
                     type=AiEventType.TRANSCRIPT_PARTIAL,
                     data={"text": delta_text},
@@ -522,7 +616,7 @@ class OpenAIRealtimeClient(AiDuplexBase):
             # Final transcription result
             transcript = data.get("transcript")
             self._logger.info(f"✅ Transcription completed: {transcript}")
-            await self._event_queue.put(
+            self._emit_event(
                 AiEvent(
                     type=AiEventType.TRANSCRIPT_FINAL,
                     data={"text": transcript},
@@ -530,67 +624,74 @@ class OpenAIRealtimeClient(AiDuplexBase):
                 )
             )
 
-        elif msg_type == "response.audio_transcript.delta":
-            # AI response transcript (what the AI is saying)
+        elif msg_type in ("response.output_audio_transcript.delta", "response.audio_transcript.delta"):
+            # AI response transcript (what the AI is saying). GA servers send
+            # response.output_audio_transcript.*; beta servers response.audio_transcript.*
             delta_text = data.get("delta")
             self._logger.info(f"🤖 AI transcript delta: {delta_text}")
 
-        elif msg_type == "response.audio_transcript.done":
+        elif msg_type in ("response.output_audio_transcript.done", "response.audio_transcript.done"):
             # AI response transcript completed
             transcript = data.get("transcript")
             self._logger.info(f"✅ AI transcript done: {transcript}")
 
         elif msg_type == "response.output_audio.delta":
-            # Audio chunk from AI (base64 encoded G.711 μ-law @ 8kHz)
+            # Audio chunk from AI (base64 G.711 μ-law @ 8kHz or PCM16 @ 24kHz)
             audio_base64 = data.get("delta")
             if audio_base64:
                 # Decode base64 to get audio bytes
                 audio_bytes = base64.b64decode(audio_base64)
 
-                # Verify we're using the expected format
-                if self._audio_format != "audio/pcmu":
-                    self._logger.error(
-                        "Unexpected audio format - expected audio/pcmu",
-                        actual_format=self._audio_format,
-                        chunk_size=len(audio_bytes)
-                    )
+                # Convert to PCM16 @ 8kHz for the SIP side
+                pcm16_8k = self._convert_downlink_audio(audio_bytes)
+                if not pcm16_8k:
                     return
 
-                # G.711 μ-law @ 8kHz from OpenAI
-                g711_ulaw = audio_bytes
-                # Convert G.711 μ-law → PCM16 @ 8kHz for PJSUA2
-                pcm16_8k = Codec.ulaw_to_pcm16(g711_ulaw)
-
                 # Log chunk sizes
-                chunk_size_g711 = len(g711_ulaw)
+                chunk_size_in = len(audio_bytes)
                 chunk_size_pcm16 = len(pcm16_8k)
-                duration_ms = (chunk_size_g711 / 8000) * 1000  # G.711 @ 8kHz: 1 byte = 1 sample
+                duration_ms = (chunk_size_pcm16 / 2 / self._sip_sample_rate) * 1000
 
-                await self._audio_queue.put(pcm16_8k)
+                self._queue_audio(pcm16_8k)
                 self._audio_chunks_received += 1
 
                 if self._audio_chunks_received % 10 == 0:
                     self._logger.info(
-                        f"📢 Received {self._audio_chunks_received} audio chunks (G.711 μ-law)",
-                        g711_ulaw=f"{chunk_size_g711}B",
+                        f"📢 Received {self._audio_chunks_received} audio chunks ({self._audio_format})",
+                        input_bytes=f"{chunk_size_in}B",
                         pcm16_8k=f"{chunk_size_pcm16}B",
                         duration=f"{duration_ms:.1f}ms"
                     )
                 elif self._audio_chunks_received <= 5:
                     self._logger.info(
-                        f"📢 Chunk #{self._audio_chunks_received} (G.711 μ-law)",
-                        g711_ulaw=f"{chunk_size_g711}B",
+                        f"📢 Chunk #{self._audio_chunks_received} ({self._audio_format})",
+                        input_bytes=f"{chunk_size_in}B",
                         pcm16_8k=f"{chunk_size_pcm16}B",
                         duration=f"{duration_ms:.1f}ms"
                     )
 
+        elif msg_type == "response.created":
+            # The greeting was accepted (or another response started): no fallback needed
+            self._greeting_out_of_band_pending = False
+
         elif msg_type == "error":
             err = data.get("error", {}) or {}
+            if (
+                self._greeting_out_of_band_pending
+                and err.get("param") == "response.conversation"
+            ):
+                # Gateway rejects out-of-band responses; resend the greeting in-conversation
+                self._logger.warning(
+                    "Out-of-band greeting rejected, resending in conversation",
+                    error=err.get("message")
+                )
+                await self._send_greeting(out_of_band=False)
+                return
             err_message = self._format_error_message(err)
             # Surface to connect() so it fails fast instead of timing out
             if not self._session_updated_event.is_set():
                 self._connect_error = err_message
-            await self._event_queue.put(
+            self._emit_event(
                 AiEvent(
                     type=AiEventType.ERROR,
                     error=err_message,

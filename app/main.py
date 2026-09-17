@@ -129,6 +129,9 @@ def create_ai_client() -> AiDuplexClient:
             "Using OpenAI Realtime client",
             model=config.ai.openai_model,
             endpoint=config.ai.openai_ws_endpoint,
+            audio_format=config.ai.openai_audio_format,
+            noise_reduction=config.ai.openai_noise_reduction,
+            voice=config.ai.openai_voice or None,
             has_project=bool(config.ai.openai_project),
             has_organization=bool(config.ai.openai_organization),
             has_greeting=greeting is not None,
@@ -139,11 +142,14 @@ def create_ai_client() -> AiDuplexClient:
         client = OpenAIRealtimeClient(
             api_key=config.ai.openai_api_key,
             model=config.ai.openai_model,
+            voice=config.ai.openai_voice,
             ws_endpoint=config.ai.openai_ws_endpoint,
             project=config.ai.openai_project,
             organization=config.ai.openai_organization,
             instructions=instructions,
-            greeting=greeting
+            greeting=greeting,
+            audio_format=config.ai.openai_audio_format,
+            noise_reduction=config.ai.openai_noise_reduction
         )
         logger.info("OpenAI client instance created")
         return client
@@ -246,10 +252,14 @@ def create_ai_client() -> AiDuplexClient:
         raise ValueError(f"Unsupported AI vendor: {vendor}")
 
 
-async def run_real_mode() -> None:
+async def run_real_mode(stop_event: Optional[asyncio.Event] = None) -> None:
     """Run in real mode with actual SIP and AI services.
 
     Each incoming call will create its own AI client and bridge.
+
+    Args:
+        stop_event: Set to shut down gracefully (active calls are hung up
+            before the SIP transport is closed)
     """
     logger = structlog.get_logger(__name__)
     logger.info("Starting SIP-to-AI Bridge (Pure Asyncio)")
@@ -303,7 +313,8 @@ async def run_real_mode() -> None:
     sip_server = AsyncSIPServer(
         host=config.sip.domain,
         port=config.sip.port,
-        call_callback=on_incoming_call
+        call_callback=on_incoming_call,
+        ai_connect_timeout=float(config.system.ai_connection_timeout_sec)
     )
 
     logger.info(
@@ -313,13 +324,27 @@ async def run_real_mode() -> None:
         ai_vendor=config.ai.vendor
     )
 
-    try:
-        await sip_server.run()
+    stop_event = stop_event or asyncio.Event()
+    server_task = asyncio.create_task(sip_server.run(), name="sip-server")
+    stop_task = asyncio.create_task(stop_event.wait(), name="shutdown-wait")
 
-    except KeyboardInterrupt:
-        logger.info("Shutting down...")
+    try:
+        done, _ = await asyncio.wait(
+            {server_task, stop_task},
+            return_when=asyncio.FIRST_COMPLETED
+        )
+        if stop_task in done:
+            logger.info("Shutting down - hanging up active calls")
     finally:
+        stop_task.cancel()
+        # Hangs up every active call (BYE / 503) before closing the transport
         await sip_server.stop()
+        if not server_task.done():
+            server_task.cancel()
+        try:
+            await server_task
+        except asyncio.CancelledError:
+            pass
 
 
 async def main() -> None:
@@ -332,16 +357,31 @@ async def main() -> None:
         ai_vendor=config.ai.vendor
     )
 
-    # Setup signal handlers
-    def signal_handler(sig: int, frame: any) -> None:
-        logger.info(f"Received signal {sig}, shutting down...")
-        sys.exit(0)
+    # Graceful shutdown on SIGINT/SIGTERM: the handler only sets an event, so
+    # calls are hung up (BYE sent) from the event loop before exit. A second
+    # signal cancels the shutdown and exits immediately.
+    loop = asyncio.get_running_loop()
+    stop_event = asyncio.Event()
+    main_task = asyncio.current_task()
 
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
+    def signal_handler(sig: signal.Signals) -> None:
+        if stop_event.is_set():
+            logger.warning("Received second signal, exiting without waiting", signal=sig.name)
+            if main_task is not None:
+                main_task.cancel()
+            return
+        logger.info("Received signal, shutting down gracefully", signal=sig.name)
+        stop_event.set()
 
-    # Always run with SIP and AI services
-    await run_real_mode()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, signal_handler, sig)
+
+    try:
+        # Always run with SIP and AI services
+        await run_real_mode(stop_event)
+    finally:
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.remove_signal_handler(sig)
 
 
 def cli() -> None:
@@ -367,7 +407,8 @@ def cli() -> None:
 
     try:
         asyncio.run(main())
-    except KeyboardInterrupt:
+        logger.info("Shutdown complete")
+    except (KeyboardInterrupt, asyncio.CancelledError):
         logger.info("Shutdown complete")
         sys.exit(0)
     except Exception as e:

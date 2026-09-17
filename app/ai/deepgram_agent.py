@@ -19,7 +19,7 @@ import structlog
 import websockets
 from websockets.client import WebSocketClientProtocol
 
-from app.ai.duplex_base import AiDuplexBase, AiEvent, AiEventType
+from app.ai.duplex_base import AiDuplexBase, AiEvent, AiEventType, AudioChunkQueue, describe_error
 
 if TYPE_CHECKING:
     from app.ai.sixtydb_tts import SixtyDBTTSClient
@@ -111,7 +111,8 @@ class DeepgramAgentClient(AiDuplexBase):
         self._ws: Optional[WebSocketClientProtocol] = None
 
         # Event queues (same pattern as OpenAI client)
-        self._audio_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=100)
+        # Audio never blocks the WebSocket reader (see AudioChunkQueue)
+        self._audio_queue = AudioChunkQueue()
         self._event_queue: asyncio.Queue[AiEvent] = asyncio.Queue(maxsize=100)
 
         # Background task for receiving messages
@@ -200,7 +201,7 @@ class DeepgramAgentClient(AiDuplexBase):
                 )
 
             # Emit connected event
-            await self._event_queue.put(AiEvent(
+            self._emit_event(AiEvent(
                 type=AiEventType.CONNECTED,
                 data={"status": "connected"}
             ))
@@ -219,7 +220,7 @@ class DeepgramAgentClient(AiDuplexBase):
             else:
                 msg = f"Deepgram rejected the connection (HTTP {status})"
             self._logger.error(msg)
-            await self._event_queue.put(AiEvent(
+            self._emit_event(AiEvent(
                 type=AiEventType.ERROR,
                 data={"error": msg, "status": status}
             ))
@@ -227,10 +228,10 @@ class DeepgramAgentClient(AiDuplexBase):
 
         except Exception as e:
             self._connected = False
-            self._logger.error("Failed to connect to Deepgram", error=str(e))
-            await self._event_queue.put(AiEvent(
+            self._logger.error("Failed to connect to Deepgram", error=describe_error(e))
+            self._emit_event(AiEvent(
                 type=AiEventType.ERROR,
-                data={"error": str(e)}
+                data={"error": describe_error(e)}
             ))
             raise
 
@@ -327,7 +328,7 @@ class DeepgramAgentClient(AiDuplexBase):
             await self._ws.close()
             self._ws = None
 
-            await self._event_queue.put(AiEvent(
+            self._emit_event(AiEvent(
                 type=AiEventType.DISCONNECTED,
                 data={"status": "disconnected"}
             ))
@@ -403,7 +404,7 @@ class DeepgramAgentClient(AiDuplexBase):
 
         except Exception as e:
             self._logger.error("Failed to send audio", error=str(e))
-            await self._event_queue.put(AiEvent(
+            self._emit_event(AiEvent(
                 type=AiEventType.ERROR,
                 data={"error": f"Send audio failed: {e}"}
             ))
@@ -457,6 +458,7 @@ class DeepgramAgentClient(AiDuplexBase):
 
         try:
             async for message in self._ws:
+                self._mark_received()
                 if isinstance(message, str):
                     await self._handle_json_message(message)
                 elif isinstance(message, bytes):
@@ -471,17 +473,14 @@ class DeepgramAgentClient(AiDuplexBase):
                 type=AiEventType.DISCONNECTED,
                 data={"status": "disconnected"}
             )
-            try:
-                self._event_queue.put_nowait(event)
-            except asyncio.QueueFull:
-                self._logger.debug("Event queue full, dropping disconnect event")
+            self._emit_event(event)
             try:
                 self._audio_queue.put_nowait(b"")
             except asyncio.QueueFull:
                 pass
         except Exception as e:
             self._logger.error("Error receiving messages", error=str(e))
-            await self._event_queue.put(AiEvent(
+            self._emit_event(AiEvent(
                 type=AiEventType.ERROR,
                 data={"error": str(e)}
             ))
@@ -526,7 +525,7 @@ class DeepgramAgentClient(AiDuplexBase):
         pcm16_chunk = Codec.ulaw_to_pcm16(audio_data)
 
         # Send entire chunk to AudioAdapter (it will handle frame splitting).
-        await self._audio_queue.put(pcm16_chunk)
+        self._queue_audio(pcm16_chunk)
 
         # Outbound diagnostics (issue #6): make the AI→caller path observable.
         self._agent_audio_chunks += 1
@@ -559,13 +558,13 @@ class DeepgramAgentClient(AiDuplexBase):
             msg_type = data.get("type")
 
             if msg_type == "UserStartedSpeaking":
-                await self._event_queue.put(AiEvent(
+                self._emit_event(AiEvent(
                     type=AiEventType.TRANSCRIPT_PARTIAL,
                     data={"event": "user_started_speaking"}
                 ))
 
             elif msg_type == "AgentStartedSpeaking":
-                await self._event_queue.put(AiEvent(
+                self._emit_event(AiEvent(
                     type=AiEventType.TRANSCRIPT_PARTIAL,
                     data={"event": "agent_started_speaking"}
                 ))
@@ -575,7 +574,7 @@ class DeepgramAgentClient(AiDuplexBase):
                 # "done" signal must not clear the flag — 60db's flush_completed does.
                 if self._speak_provider != "60db":
                     self._agent_speaking = False
-                await self._event_queue.put(AiEvent(
+                self._emit_event(AiEvent(
                     type=AiEventType.TRANSCRIPT_FINAL,
                     data={"event": "agent_audio_done"}
                 ))
@@ -588,7 +587,7 @@ class DeepgramAgentClient(AiDuplexBase):
                     error=error_msg,
                     code=error_code
                 )
-                await self._event_queue.put(AiEvent(
+                self._emit_event(AiEvent(
                     type=AiEventType.ERROR,
                     data={"error": error_msg, "code": error_code}
                 ))

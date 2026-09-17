@@ -7,6 +7,7 @@ with G.711 codec support and precise 20ms frame timing.
 import asyncio
 import audioop
 import random
+import time
 from dataclasses import dataclass
 from typing import AsyncIterator, Callable, Optional
 
@@ -52,8 +53,25 @@ class RTPConfig:
         return self.frame_samples
 
 
+# Static RTP payload types (RFC 3551)
+PT_PCMU = 0
+PT_PCMA = 8
+
+
 class G711Codec:
     """G.711 audio codec (PCMU/PCMA) using audioop."""
+
+    def encode(self, pcm16: bytes, payload_type: int) -> bytes:
+        """Encode PCM16 with the codec for the RTP payload type (PCMA or PCMU)."""
+        if payload_type == PT_PCMA:
+            return self.encode_pcma(pcm16)
+        return self.encode_pcmu(pcm16)
+
+    def decode(self, payload: bytes, payload_type: int) -> bytes:
+        """Decode an RTP payload to PCM16 with the codec for its payload type."""
+        if payload_type == PT_PCMA:
+            return self.decode_pcma(payload)
+        return self.decode_pcmu(payload)
 
     def encode_pcmu(self, pcm16: bytes) -> bytes:
         """Encode PCM16 to G.711 μ-law.
@@ -175,6 +193,9 @@ class RTPProtocol(asyncio.DatagramProtocol):
         self.session = session
         self.transport: Optional[asyncio.DatagramTransport] = None
         self._logged_first_packet = False
+        self._ignored_packets = 0
+        self._invalid_packets = 0
+        self._rejected_source_packets = 0
 
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
         """Called when UDP socket is ready."""
@@ -193,8 +214,39 @@ class RTPProtocol(asyncio.DatagramProtocol):
             # Parse RTP packet
             rtp = RTPPacket(data)
 
+            # Only the negotiated audio codec is decoded; other payload types
+            # (telephone-event, comfort noise, stray packets) are ignored
+            expected_pt = self.session.config.payload_type
+            if rtp.version != 2 or rtp.payload_type != expected_pt:
+                self._ignored_packets += 1
+                if self._ignored_packets == 1 or self._ignored_packets % 500 == 0:
+                    logger.debug(
+                        "Ignoring RTP packet with unexpected version/payload type",
+                        version=rtp.version,
+                        payload_type=rtp.payload_type,
+                        expected_payload_type=expected_pt,
+                        ignored_total=self._ignored_packets,
+                        source=addr,
+                    )
+                return
+
+            # Symmetric RTP: send to where the caller's RTP actually comes from.
+            # Packets from any other source are dropped (never reach the AI).
+            if not self.session.observe_source(addr, rtp.ssrc):
+                self._rejected_source_packets += 1
+                self.session.rejected_source_packets = self._rejected_source_packets
+                if self._rejected_source_packets == 1 or self._rejected_source_packets % 500 == 0:
+                    logger.debug(
+                        "Dropping RTP packet from non-latched source",
+                        source=addr,
+                        ssrc=rtp.ssrc,
+                        latched_remote_addr=self.session.remote_addr,
+                        dropped_total=self._rejected_source_packets,
+                    )
+                return
+
             # Decode G.711 to PCM16
-            pcm = self.session.codec.decode_pcmu(rtp.payload)
+            pcm = self.session.codec.decode(rtp.payload, rtp.payload_type)
 
             # Make the inbound caller-audio path visible on first packet (issue #6:
             # "caller audio is not logged"). Confirms RTP is actually arriving.
@@ -220,7 +272,17 @@ class RTPProtocol(asyncio.DatagramProtocol):
                     pass
 
         except Exception as e:
-            logger.error("RTP packet parse error", error=str(e))
+            # Garbage/truncated datagrams: count them, log only periodically
+            self._invalid_packets += 1
+            self.session.invalid_packets = self._invalid_packets
+            if self._invalid_packets == 1 or self._invalid_packets % 100 == 0:
+                logger.debug(
+                    "Ignoring invalid RTP datagram",
+                    error=str(e),
+                    source=addr,
+                    size=len(data),
+                    invalid_total=self._invalid_packets,
+                )
 
     def error_received(self, exc: Exception) -> None:
         """Called when socket error occurs."""
@@ -229,6 +291,17 @@ class RTPProtocol(asyncio.DatagramProtocol):
 
 class RTPSession:
     """RTP session with precise 20ms timing using asyncio.TaskGroup."""
+
+    # Consecutive valid packets (same source address and SSRC) needed to latch
+    # to a source that does not match the SDP address (NAT)
+    LATCH_PACKETS = 2
+    # A latched source must be silent this long before another source may take over
+    LATCH_MOVE_SILENCE = 0.5
+    # Steady packets (same source and SSRC) a new source needs to take over the
+    # latch, or to latch when it is a stale pre-re-INVITE source
+    LATCH_MOVE_PACKETS = 10
+    # Maximum gap between packets of a candidate source to count as steady
+    LATCH_STEADY_GAP = 0.1
 
     def __init__(
         self,
@@ -244,7 +317,9 @@ class RTPSession:
             config: RTP configuration
         """
         self.local_port = local_port
+        # remote_addr is where RTP is sent; sdp_remote_addr is what SDP advertised
         self.remote_addr = remote_addr
+        self.sdp_remote_addr = remote_addr
         self.config = config or RTPConfig()
         self.codec = G711Codec()
 
@@ -261,6 +336,24 @@ class RTPSession:
         self._transport_lock = asyncio.Lock()
         self._running = False
 
+        # Symmetric RTP (latching) state
+        self._latched = False
+        self._latched_ssrc: Optional[int] = None
+        self._latched_last_rx = 0.0
+        self._latch_candidate: Optional[tuple[tuple, int]] = None  # (addr, ssrc)
+        self._latch_count = 0
+        self._latch_candidate_last_rx = 0.0
+        # Sources of the previous SDP address (before a re-INVITE changed it)
+        self._stale_sources: set[tuple] = set()
+
+        # Outbound media enabled (False while on hold: recvonly/inactive answer
+        # or c=0.0.0.0)
+        self._send_enabled = True
+
+        # Inbound packet counters (updated by RTPProtocol)
+        self.invalid_packets = 0
+        self.rejected_source_packets = 0
+
         # Statistics
         self._frames_sent = 0
         self._frames_received = 0
@@ -275,6 +368,171 @@ class RTPSession:
         if self._running:
             raise RuntimeError("Cannot update port while session is running")
         self.local_port = new_port
+
+    @property
+    def latched(self) -> bool:
+        """True once the send address has been latched to the observed source."""
+        return self._latched
+
+    @property
+    def send_enabled(self) -> bool:
+        """True if outbound RTP is sent (False while the call is on hold)."""
+        return self._send_enabled
+
+    def set_send_enabled(self, enabled: bool) -> None:
+        """Enable or disable outbound RTP (hold/resume).
+
+        While disabled, queued downlink audio is discarded at the normal 20ms
+        pace and no packets are sent.
+
+        Args:
+            enabled: True to send RTP, False to stop sending
+        """
+        if enabled == self._send_enabled:
+            return
+        self._send_enabled = enabled
+        logger.info(
+            "Outbound RTP resumed" if enabled else "Outbound RTP paused (hold)",
+            remote_addr=self.remote_addr,
+        )
+
+    def observe_source(self, addr: tuple, ssrc: int, now: Optional[float] = None) -> bool:
+        """Track the source of the caller's RTP (symmetric RTP) and filter sources.
+
+        Called for each valid inbound packet (expected payload type). Rules:
+
+        - A packet from the SDP address latches immediately (preferred source).
+        - A packet from another address latches after LATCH_PACKETS consecutive
+          packets with the same SSRC when nothing is latched yet (callers behind
+          NAT/proxy/TUN whose SDP address is not where RTP comes from).
+        - Sources of the previous SDP address (before a re-INVITE) need
+          LATCH_MOVE_PACKETS steady packets, so in-flight packets from the old
+          port never win over the new SDP address.
+        - Once latched, another source can take over only after the latched
+          source has been silent for LATCH_MOVE_SILENCE and the new source sent
+          LATCH_MOVE_PACKETS steady packets with one SSRC. A packet from the SDP
+          address always takes over.
+
+        Args:
+            addr: Source (IP, port) of the packet
+            ssrc: RTP SSRC of the packet
+            now: Monotonic time (defaults to time.monotonic())
+
+        Returns:
+            True if the packet comes from the latched source and must be used,
+            False if it must be dropped
+        """
+        if now is None:
+            now = time.monotonic()
+        source = (addr[0], int(addr[1]))
+
+        if self._latched and source == tuple(self.remote_addr):
+            self._latched_last_rx = now
+            self._latched_ssrc = ssrc
+            return True
+
+        if source == tuple(self.sdp_remote_addr):
+            self._latch(source, ssrc, now, reason="sdp address")
+            return True
+
+        # Candidate tracking: same source and SSRC with no large gap
+        if (
+            self._latch_candidate == (source, ssrc)
+            and now - self._latch_candidate_last_rx <= self.LATCH_STEADY_GAP
+        ):
+            self._latch_count += 1
+        else:
+            self._latch_candidate = (source, ssrc)
+            self._latch_count = 1
+        self._latch_candidate_last_rx = now
+
+        if self._latched:
+            if now - self._latched_last_rx < self.LATCH_MOVE_SILENCE:
+                return False
+            required = self.LATCH_MOVE_PACKETS
+        elif source in self._stale_sources:
+            required = self.LATCH_MOVE_PACKETS
+        else:
+            required = self.LATCH_PACKETS
+
+        if self._latch_count < required:
+            return False
+
+        self._latch(source, ssrc, now, reason="observed source")
+        return True
+
+    def _latch(self, source: tuple, ssrc: int, now: float, reason: str) -> None:
+        """Latch the send address to source."""
+        previous = tuple(self.remote_addr) if self._latched else None
+        self._latched = True
+        self._latched_ssrc = ssrc
+        self._latched_last_rx = now
+        self._latch_candidate = None
+        self._latch_count = 0
+        self._stale_sources.clear()
+
+        if source != tuple(self.remote_addr):
+            logger.info(
+                "Symmetric RTP: sending to observed caller RTP source",
+                sdp_remote_addr=self.sdp_remote_addr,
+                previous_remote_addr=previous,
+                latched_remote_addr=source,
+                ssrc=ssrc,
+                reason=reason,
+            )
+            self.remote_addr = source
+
+    def update_remote(self, remote_addr: tuple[str, int], payload_type: int) -> None:
+        """Apply a changed remote SDP (re-INVITE).
+
+        A new SDP address resets latching so it can re-latch to the new source;
+        the previous SDP and latched addresses become stale sources that cannot
+        immediately win the latch.
+
+        Args:
+            remote_addr: Remote (IP, port) from the new SDP
+            payload_type: Negotiated RTP payload type
+        """
+        if tuple(remote_addr) != tuple(self.sdp_remote_addr):
+            logger.info(
+                "Remote RTP address changed",
+                old_sdp_remote_addr=self.sdp_remote_addr,
+                new_sdp_remote_addr=remote_addr,
+            )
+            self._stale_sources = {
+                tuple(self.sdp_remote_addr),
+                (self.remote_addr[0], int(self.remote_addr[1])),
+            }
+            self._stale_sources.discard(tuple(remote_addr))
+            self.sdp_remote_addr = remote_addr
+            self.remote_addr = remote_addr
+            self._latched = False
+            self._latched_ssrc = None
+            self._latch_candidate = None
+            self._latch_count = 0
+
+        if payload_type != self.config.payload_type:
+            logger.info(
+                "RTP payload type changed",
+                old_payload_type=self.config.payload_type,
+                new_payload_type=payload_type,
+            )
+            self.config.payload_type = payload_type
+
+    def clear_tx_queue(self) -> int:
+        """Drop queued outbound audio frames (barge-in).
+
+        Returns:
+            Number of frames dropped
+        """
+        dropped = 0
+        while True:
+            try:
+                self.tx_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            dropped += 1
+        return dropped
 
     async def start(self) -> None:
         """Start RTP session (create UDP endpoint).
@@ -380,8 +638,15 @@ class RTPSession:
                 pcm_data = silence_pcm16
                 self._silence_frames += 1
 
-            # 2. Encode PCM16 to G.711
-            ulaw_data = self.codec.encode_pcmu(pcm_data)
+            if not self._send_enabled:
+                # On hold: send nothing, but keep the pace and the RTP clock
+                self.timestamp = (self.timestamp + frame_samples) % 0x100000000
+                next_send_time += interval
+                await asyncio.sleep(max(0, next_send_time - loop.time()))
+                continue
+
+            # 2. Encode PCM16 to G.711 (negotiated PCMU or PCMA)
+            ulaw_data = self.codec.encode(pcm_data, self.config.payload_type)
 
             # 3. Build and send RTP packet
             packet = RTPPacket.build(
@@ -468,6 +733,22 @@ class RTPSession:
                 logger.error("RTP receive_audio error", error=str(e))
                 break
 
+    async def receive_frame(self, timeout: float) -> Optional[bytes]:
+        """Receive one PCM16 audio frame, waiting at most timeout seconds.
+
+        Args:
+            timeout: Maximum wait in seconds
+
+        Returns:
+            PCM16 frame (320 bytes @ 8kHz), or None if no RTP arrived in time
+        """
+        try:
+            pcm_data = await asyncio.wait_for(self.rx_queue.get(), timeout=timeout)
+        except asyncio.TimeoutError:
+            return None
+        self._frames_received += 1
+        return pcm_data
+
     async def send_audio(self, pcm_data: bytes) -> None:
         """Send PCM16 audio frame to RTP.
 
@@ -477,21 +758,24 @@ class RTPSession:
         await self.tx_queue.put(pcm_data)
 
     async def stop(self) -> None:
-        """Stop RTP session (thread-safe)."""
+        """Stop RTP session (thread-safe, idempotent)."""
         self._running = False
 
         # Close and clear transport with lock protection
         async with self._transport_lock:
-            if self.transport:
-                try:
-                    self.transport.close()
-                except Exception as e:
-                    logger.debug("Error closing transport", error=str(e))
-                finally:
-                    self.transport = None
+            if not self.transport:
+                return
+            try:
+                self.transport.close()
+            except Exception as e:
+                logger.debug("Error closing transport", error=str(e))
+            finally:
+                self.transport = None
 
         logger.info(
             "RTP session stopped",
             frames_sent=self._frames_sent,
-            frames_received=self._frames_received
+            frames_received=self._frames_received,
+            invalid_packets=self.invalid_packets,
+            rejected_source_packets=self.rejected_source_packets
         )

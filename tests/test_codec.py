@@ -40,3 +40,11 @@ class TestCodec:
 
         pcm_result = convert_g711_to_pcm16(empty, "ulaw")
         assert pcm_result == empty
+
+
+def test_resample_pcm16_downsample_short_input_keeps_ratio() -> None:
+    """Inputs shorter than the anti-aliasing filter must not grow to the filter length."""
+    from app.utils.codec import resample_pcm16
+
+    assert len(resample_pcm16(b"\x10\x00" * 3, 24000, 8000)) == 2
+    assert len(resample_pcm16(b"\x10\x00" * 6, 24000, 8000)) == 4

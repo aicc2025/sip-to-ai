@@ -310,19 +310,22 @@ Obtén tu clave API en [xAI Console](https://console.x.ai/).
 
 ## ¿No usas un modelo de voz de extremo a extremo?
 
-Este proyecto conecta audio SIP con **modelos de voz en tiempo real de extremo a extremo**: un único modelo de voz a voz realiza el reconocimiento, el razonamiento y la síntesis en un solo salto.
+Este proyecto está pensado para modelos de voz a voz. Si prefieres etapas separadas **ASR → LLM → TTS**, usa [**cascade-realtime-gateway**](https://github.com/rasonyang/cascade-realtime-gateway). Expone el pipeline como un WebSocket compatible con OpenAI Realtime, así que sip-to-ai se conecta a él con el cliente de OpenAI.
 
-Si en cambio necesitas una **cascada** — etapas separadas de **ASR + LLM + TTS**, de modo que cada una pueda elegirse, sustituirse o autoalojarse de forma independiente — **recomendamos encarecidamente** [**cascade-realtime-gateway**](https://github.com/rasonyang/cascade-realtime-gateway).
+- **Ventajas:** eliges o alojas cada etapa (ASR de Deepgram / Qwen, LLM y TTS de OpenAI / Qwen), llamadas a funciones, interrupción (barge-in)
+- **Desventajas:** más latencia que un modelo de extremo a extremo
 
-Ejecuta una tubería en cascada ASR → LLM → TTS detrás de un **WebSocket compatible con OpenAI Realtime**, por lo que se presenta como un modelo de voz en tiempo real ante todo lo que tenga delante (coloca un terminador TLS delante si necesitas `wss://`, como requieren los SDK oficiales de OpenAI), y además ofrece:
+Configura `.env`:
 
-- **Etapas conectables**: ASR de Deepgram o Qwen, LLM de OpenAI o Qwen, TTS de OpenAI o Qwen — una instancia de proveedor para cada una, reconfigurable en tiempo de ejecución mediante una API de administración
-- **Prompts completos y llamadas a funciones**: herramientas declaradas por sesión, control de `tool_choice`, resultados de herramientas devueltos como cadenas opacas
-- **Detección de turno con VAD en el servidor e `interrupt_response`** para la interjección (barge-in)
-
-**Compromiso frente al extremo a extremo:** una cascada sitúa una cadena ASR → LLM → TTS (y dos saltos de red adicionales) en la ruta de respuesta, por lo que no será tan rápida como un modelo de voz a voz. Elige la cascada cuando el control sobre cada etapa importe más que los últimos cientos de milisegundos; elige la ruta de extremo a extremo de este proyecto (OpenAI Realtime, Deepgram, Gemini Live, Grok Voice) cuando la latencia sea la prioridad.
-
-**Nota de integración:** el perfil de protocolo de cascade solo acepta y emite **PCM16 @ 24kHz** (se rechaza `audio/pcmu`), por lo que conectarlo requiere la misma ruta de remuestreo que el cliente de Gemini Live (`resample_pcm16`, 8kHz ↔ 24kHz) en lugar del paso directo de G.711 nativo que se usa para OpenAI/Deepgram/Grok. Parte de `OPENAI_WS_ENDPOINT` (`app/ai/openai_realtime.py`), que es el endpoint Realtime configurable.
+```bash
+AI_VENDOR=openai
+OPENAI_WS_ENDPOINT=ws://127.0.0.1:18080/v1/realtime
+OPENAI_API_KEY=sk-test          # la REALTIME_API_KEY del gateway
+OPENAI_MODEL=qwen               # cualquier valor; no se usa para enrutar
+OPENAI_AUDIO_FORMAT=pcm16       # obligatorio: cascade solo acepta PCM16 @ 24kHz
+OPENAI_NOISE_REDUCTION=none     # obligatorio: cascade rechaza la reducción de ruido
+OPENAI_VOICE=                   # vacío: usa la voz configurada en el gateway
+```
 
 ## Solución de Problemas
 

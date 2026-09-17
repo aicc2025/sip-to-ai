@@ -84,3 +84,67 @@ def test_openai_client_formats_mismatched_project_error() -> None:
 
     assert "OPENAI_PROJECT does not match" in message
     assert "Use an API key created in that project" in message
+
+
+def test_openai_config_load_audio_defaults() -> None:
+    """Without overrides the G.711 passthrough, near-field NR and marin voice stay in place."""
+    from app.config import Config
+
+    with patch.dict(os.environ, {}, clear=True):
+        cfg = Config.load()
+
+    assert cfg.ai.openai_audio_format == "pcmu"
+    assert cfg.ai.openai_noise_reduction == "near_field"
+    assert cfg.ai.openai_voice == "marin"
+
+
+def test_openai_config_load_cascade_overrides() -> None:
+    """pcm16 / none / empty voice are parsed for Realtime-compatible gateways."""
+    from app.config import Config
+
+    with patch.dict(
+        os.environ,
+        {
+            "OPENAI_AUDIO_FORMAT": "PCM16",
+            "OPENAI_NOISE_REDUCTION": "none",
+            "OPENAI_VOICE": "",
+        },
+        clear=True,
+    ):
+        cfg = Config.load()
+
+    assert cfg.ai.openai_audio_format == "pcm16"
+    assert cfg.ai.openai_noise_reduction == "none"
+    assert cfg.ai.openai_voice == ""
+
+
+def test_openai_config_rejects_unknown_audio_format() -> None:
+    """An unknown OPENAI_AUDIO_FORMAT fails fast instead of silently using pcmu."""
+    import pytest
+
+    from app.config import Config
+
+    with patch.dict(os.environ, {"OPENAI_AUDIO_FORMAT": "opus"}, clear=True):
+        with pytest.raises(ValueError, match="OPENAI_AUDIO_FORMAT"):
+            Config.load()
+
+
+def test_openai_config_rejects_unknown_noise_reduction() -> None:
+    """An unknown OPENAI_NOISE_REDUCTION fails fast."""
+    import pytest
+
+    from app.config import Config
+
+    with patch.dict(os.environ, {"OPENAI_NOISE_REDUCTION": "off"}, clear=True):
+        with pytest.raises(ValueError, match="OPENAI_NOISE_REDUCTION"):
+            Config.load()
+
+
+def test_openai_client_rejects_unknown_audio_format() -> None:
+    """The client validates audio_format itself as well."""
+    import pytest
+
+    from app.ai.openai_realtime import OpenAIRealtimeClient
+
+    with pytest.raises(ValueError, match="audio_format"):
+        OpenAIRealtimeClient(api_key="sk-test", audio_format="opus")

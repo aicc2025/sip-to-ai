@@ -103,6 +103,12 @@ class AIConfig:
     openai_organization: str = ""
     openai_ws_endpoint: str = "wss://api.openai.com/v1/realtime"
     openai_model: str = "gpt-realtime-2.1"
+    openai_voice: str = "marin"  # Empty: omit voice and use the server default
+    # "pcmu": G.711 μ-law @ 8kHz passthrough (OpenAI default)
+    # "pcm16": PCM16 @ 24kHz with resampling (Realtime-compatible gateways such as cascade)
+    openai_audio_format: Literal["pcmu", "pcm16"] = "pcmu"
+    # "near_field" | "far_field" | "none" (sends null; required by gateways that reject noise reduction)
+    openai_noise_reduction: Literal["near_field", "far_field", "none"] = "near_field"
 
     # Deepgram Configuration
     deepgram_api_key: str = ""
@@ -179,6 +185,19 @@ class Config:
                 f"SPEAK_PROVIDER must be 'deepgram' or '60db', got: {speak_provider!r}"
             )
 
+        openai_audio_format = os.getenv("OPENAI_AUDIO_FORMAT", "pcmu").lower()
+        if openai_audio_format not in ("pcmu", "pcm16"):
+            raise ValueError(
+                f"OPENAI_AUDIO_FORMAT must be 'pcmu' or 'pcm16', got: {openai_audio_format!r}"
+            )
+
+        openai_noise_reduction = os.getenv("OPENAI_NOISE_REDUCTION", "near_field").lower()
+        if openai_noise_reduction not in ("near_field", "far_field", "none"):
+            raise ValueError(
+                "OPENAI_NOISE_REDUCTION must be 'near_field', 'far_field' or 'none', "
+                f"got: {openai_noise_reduction!r}"
+            )
+
         self.ai = AIConfig(
             vendor=ai_vendor,  # type: ignore
             agent_prompt_file=os.getenv("AGENT_PROMPT_FILE", ""),
@@ -187,6 +206,9 @@ class Config:
             openai_organization=os.getenv("OPENAI_ORGANIZATION", os.getenv("OPENAI_ORG_ID", "")),
             openai_ws_endpoint=os.getenv("OPENAI_WS_ENDPOINT", "wss://api.openai.com/v1/realtime"),
             openai_model=os.getenv("OPENAI_MODEL", "gpt-realtime-2.1"),
+            openai_voice=os.getenv("OPENAI_VOICE", "marin"),
+            openai_audio_format=openai_audio_format,  # type: ignore
+            openai_noise_reduction=openai_noise_reduction,  # type: ignore
             deepgram_api_key=os.getenv("DEEPGRAM_API_KEY", ""),
             deepgram_listen_model=os.getenv("DEEPGRAM_LISTEN_MODEL", "nova-2"),
             deepgram_speak_model=os.getenv("DEEPGRAM_SPEAK_MODEL", "aura-asteria-en"),

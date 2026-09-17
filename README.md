@@ -310,19 +310,22 @@ Get your API key from [xAI Console](https://console.x.ai/).
 
 ## Not Using an End-to-End Voice Model?
 
-This project bridges SIP audio to **end-to-end realtime voice models** — one speech-to-speech model does recognition, reasoning, and synthesis in a single hop.
+This project is built for speech-to-speech models. If you want separate **ASR → LLM → TTS** stages instead, use [**cascade-realtime-gateway**](https://github.com/rasonyang/cascade-realtime-gateway). It exposes the pipeline as an OpenAI Realtime-compatible WebSocket, so sip-to-ai connects to it with the OpenAI client.
 
-If instead you need a **cascade** — separate **ASR + LLM + TTS** stages, so each one can be chosen, swapped, or self-hosted independently — we **strongly recommend** [**cascade-realtime-gateway**](https://github.com/rasonyang/cascade-realtime-gateway).
+- **Pros:** pick or self-host each stage (Deepgram / Qwen ASR, OpenAI / Qwen LLM and TTS), function calling, barge-in
+- **Cons:** higher latency than an end-to-end model
 
-It runs a cascaded ASR → LLM → TTS pipeline behind an **OpenAI Realtime-compatible WebSocket**, so it looks like a realtime voice model to everything in front of it (put a TLS terminator in front if you need `wss://`, as the official OpenAI SDKs do), and it adds:
+Configure `.env`:
 
-- **Pluggable stages**: Deepgram or Qwen ASR, OpenAI or Qwen LLM, OpenAI or Qwen TTS — one provider instance each, reconfigured at runtime through an admin API
-- **Full prompts and function calling**: tools declared per session, `tool_choice` control, tool results passed back as opaque strings
-- **Server-side VAD turn detection with `interrupt_response`** for barge-in
-
-**Trade-off vs. end-to-end:** a cascade puts an ASR → LLM → TTS chain (and two extra network hops) on the response path, so it will not be as fast as a speech-to-speech model. Choose the cascade when control over each stage matters more than the last few hundred milliseconds; choose this project's end-to-end path (OpenAI Realtime, Deepgram, Gemini Live, Grok Voice) when latency is the priority.
-
-**Integration note:** cascade's protocol profile accepts and emits **PCM16 @ 24kHz only** (`audio/pcmu` is rejected), so bridging to it needs the same resampling path as the Gemini Live client (`resample_pcm16`, 8kHz ↔ 24kHz) rather than the native G.711 passthrough used for OpenAI/Deepgram/Grok. Start from `OPENAI_WS_ENDPOINT` (`app/ai/openai_realtime.py`), which is the configurable Realtime endpoint.
+```bash
+AI_VENDOR=openai
+OPENAI_WS_ENDPOINT=ws://127.0.0.1:18080/v1/realtime
+OPENAI_API_KEY=sk-test          # the gateway's REALTIME_API_KEY
+OPENAI_MODEL=qwen               # any value; not used for routing
+OPENAI_AUDIO_FORMAT=pcm16       # required: cascade only accepts PCM16 @ 24kHz
+OPENAI_NOISE_REDUCTION=none     # required: cascade rejects noise reduction
+OPENAI_VOICE=                   # empty: use the voice configured in the gateway
+```
 
 ## Troubleshooting
 
