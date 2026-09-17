@@ -24,6 +24,11 @@ from app.ai.duplex_base import AiDuplexBase, AiEvent, AiEventType, AudioChunkQue
 if TYPE_CHECKING:
     from app.ai.sixtydb_tts import SixtyDBTTSClient
 
+# STT language for agent.listen.provider.language (agent.language is deprecated).
+# Not set on agent.speak.provider: Deepgram voices carry their language in the
+# model name and reject a speak-side "language" field.
+LISTEN_LANGUAGE = "en"
+
 
 class DeepgramAgentClient(AiDuplexBase):
     """Deepgram Voice Agent client using WebSocket only."""
@@ -241,11 +246,11 @@ class DeepgramAgentClient(AiDuplexBase):
             return
 
         agent_config: Dict = {
-            "language": "en",
             "listen": {
                 "provider": {
                     "type": "deepgram",
-                    "model": self._listen_model
+                    "model": self._listen_model,
+                    "language": LISTEN_LANGUAGE
                 }
             },
             "think": {

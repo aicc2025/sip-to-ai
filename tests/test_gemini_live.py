@@ -65,3 +65,25 @@ class TestGeminiUplink:
         client = GeminiLiveClient(api_key="k")
         with pytest.raises(ConnectionError):
             await client.send_pcm16_8k(b"\x00" * 320)
+
+
+class TestGeminiSetup:
+    """Tests for the default model and setup message."""
+
+    @pytest.mark.asyncio
+    async def test_default_model_and_setup_payload(self) -> None:
+        from app.ai.gemini_live import GeminiLiveClient
+
+        client = GeminiLiveClient(api_key="k")
+        ws = _FakeWebSocket()
+        client._ws = ws  # type: ignore[assignment]
+
+        await client._send_setup()
+
+        setup = json.loads(ws.sent[0])["setup"]
+        assert setup["model"] == "models/gemini-3.8-live"
+        assert setup["generationConfig"]["responseModalities"] == ["AUDIO"]
+        voice = setup["generationConfig"]["speechConfig"]["voiceConfig"]
+        assert voice["prebuiltVoiceConfig"]["voiceName"] == "Puck"
+        # thinkingConfig is unsupported by gemini-3.8-live; must not be sent
+        assert "thinkingConfig" not in setup["generationConfig"]
