@@ -127,7 +127,7 @@ class AIConfig:
 
     # Gemini Live Configuration
     gemini_api_key: str = ""
-    gemini_model: str = "gemini-3.1-flash-live-preview"  # Model with Live API support
+    gemini_model: str = "gemini-3.8-live"  # Model with Live API support
     gemini_voice: str = "Puck"  # Voice: Puck, Charon, Kore, Fenrir, Aoede
 
     # xAI Grok Voice Configuration
@@ -219,7 +219,7 @@ class Config:
                 "SIXTYDB_VOICE_ID", "fbb75ed2-975a-40c7-9e06-38e30524a9a1"
             ),
             gemini_api_key=os.getenv("GEMINI_API_KEY", ""),
-            gemini_model=os.getenv("GEMINI_MODEL", "gemini-3.1-flash-live-preview"),
+            gemini_model=os.getenv("GEMINI_MODEL", "gemini-3.8-live"),
             gemini_voice=os.getenv("GEMINI_VOICE", "Puck"),
             grok_api_key=os.getenv("XAI_API_KEY", ""),
             grok_ws_endpoint=os.getenv("GROK_WS_ENDPOINT", "wss://api.x.ai/v1/realtime"),

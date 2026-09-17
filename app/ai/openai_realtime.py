@@ -26,7 +26,7 @@ Session configuration (new schema):
         "audio": {
             "input": {
                 "format": {"type": "audio/pcmu"},
-                "transcription": {"model": "whisper-1"},
+                "transcription": {"model": "gpt-live-transcribe"},
                 "turn_detection": {"type": "server_vad"}
             },
             "output": {
@@ -63,6 +63,9 @@ from app.utils.codec import Codec, resample_pcm16
 AUDIO_FORMATS = ("pcmu", "pcm16")
 # Supported values for the noise_reduction constructor argument (OPENAI_NOISE_REDUCTION)
 NOISE_REDUCTION_MODES = ("near_field", "far_field", "none")
+# Model used for input audio transcription inside the realtime session
+# (whisper-1 is deprecated; shutdown 2027-02-26)
+INPUT_TRANSCRIPTION_MODEL = "gpt-live-transcribe"
 
 
 class OpenAIRealtimeClient(AiDuplexBase):
@@ -422,7 +425,7 @@ class OpenAIRealtimeClient(AiDuplexBase):
                     "input": {
                         "format": self._audio_format_payload(),
                         "transcription": {
-                            "model": "whisper-1"
+                            "model": INPUT_TRANSCRIPTION_MODEL
                         },
                         "noise_reduction": noise_reduction,
                         "turn_detection": {

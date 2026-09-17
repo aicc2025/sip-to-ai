@@ -127,14 +127,14 @@ class TestOpenAITranscriptEvents:
         client, messages = client_and_logs
         await client._process_message({
             "type": "session.updated",
-            "session": {"audio": {"input": {"transcription": {"model": "whisper-1"}}}},
+            "session": {"audio": {"input": {"transcription": {"model": "gpt-live-transcribe"}}}},
         })
-        assert "Session updated - input transcription: {'model': 'whisper-1'}" in messages
+        assert "Session updated - input transcription: {'model': 'gpt-live-transcribe'}" in messages
 
     async def test_session_updated_falls_back_to_beta_field(self, client_and_logs) -> None:
         client, messages = client_and_logs
         await client._process_message({
             "type": "session.updated",
-            "session": {"input_audio_transcription": {"model": "whisper-1"}},
+            "session": {"input_audio_transcription": {"model": "gpt-live-transcribe"}},
         })
-        assert "Session updated - input transcription: {'model': 'whisper-1'}" in messages
+        assert "Session updated - input transcription: {'model': 'gpt-live-transcribe'}" in messages

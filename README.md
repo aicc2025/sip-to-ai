@@ -15,7 +15,7 @@ This project:
 **SIP-to-AI** — stream RTP audio from **FreeSWITCH / OpenSIPS / Asterisk** directly to **end-to-end realtime voice models**:
 - ✅ **OpenAI Realtime API** (`gpt-realtime-2.1`)
 - ✅ **Deepgram Voice Agent**
-- ✅ **Gemini Live** (`gemini-3.1-flash-live-preview`, Gemini 2.5 Flash)
+- ✅ **Gemini Live** (`gemini-3.8-live`)
 - ✅ **xAI Grok Voice** (grok-voice-think-fast-2.0)
 
 Simple passthrough bridge: **SIP (G.711 μ-law @ 8kHz)** ↔ **AI voice models**. OpenAI, Deepgram, and Grok support native G.711, Gemini requires PCM16 resampling (8kHz ↔ 16kHz/24kHz).
@@ -172,7 +172,7 @@ sequenceDiagram
 - Optional greeting message on connect
 
 **`DeepgramAgentClient`** (`app/ai/deepgram_agent.py`)
-- WebSocket: `wss://agent.deepgram.com/agent`
+- WebSocket: `wss://agent.deepgram.com/v1/agent/converse`
 - Audio format: mulaw (same as G.711 μ-law @ 8kHz)
 - Settings: listen model, speak model, LLM model, agent prompt
 
@@ -259,11 +259,11 @@ Set `AI_VENDOR=gemini` in `.env`:
 AI_VENDOR=gemini
 GEMINI_API_KEY=your-key-here
 AGENT_PROMPT_FILE=agent_prompt.yaml
-GEMINI_MODEL=gemini-3.1-flash-live-preview
+GEMINI_MODEL=gemini-3.8-live
 GEMINI_VOICE=Puck
 ```
 
-Supported models (any Live API model works): `gemini-3.1-flash-live-preview` (default), `gemini-2.5-flash-native-audio-preview-12-2025`.
+Supported models (any Live API model works): `gemini-3.8-live` (default); legacy previews `gemini-3.1-flash-live-preview`, `gemini-2.5-flash-native-audio-preview-12-2025`.
 
 Available voices: `Puck`, `Charon`, `Kore`, `Fenrir`, `Aoede`
 
@@ -287,7 +287,6 @@ Available built-in voices: `eve` (default), `ara`, `leo`, `rex`, `sal`.
 
 Available models:
 - `grok-voice-think-fast-2.0` (recommended — latest generation, best UX with reasoning)
-- `grok-voice-think-fast-1.0` (previous generation, pinned)
 - `grok-voice-latest` (alias that always tracks the newest release)
 
 Get your API key from [xAI Console](https://console.x.ai/).

@@ -17,7 +17,7 @@ Este proyecto:
 **SIP-to-AI** — transmite audio RTP desde **FreeSWITCH / OpenSIPS / Asterisk** directamente a **modelos de voz en tiempo real de extremo a extremo**:
 - ✅ **OpenAI Realtime API** (`gpt-realtime-2.1`)
 - ✅ **Deepgram Voice Agent**
-- ✅ **Gemini Live** (`gemini-3.1-flash-live-preview`, Gemini 2.5 Flash)
+- ✅ **Gemini Live** (`gemini-3.8-live`)
 - ✅ **xAI Grok Voice** (grok-voice-think-fast-2.0)
 
 Puente de paso simple: **SIP (G.711 μ-law @ 8kHz)** ↔ **modelos de voz de IA**. OpenAI, Deepgram y Grok son compatibles con G.711 nativo; Gemini requiere remuestreo PCM16 (8kHz ↔ 16kHz/24kHz).
@@ -174,7 +174,7 @@ sequenceDiagram
 - Mensaje de saludo opcional al conectar
 
 **`DeepgramAgentClient`** (`app/ai/deepgram_agent.py`)
-- WebSocket: `wss://agent.deepgram.com/agent`
+- WebSocket: `wss://agent.deepgram.com/v1/agent/converse`
 - Formato de audio: mulaw (igual que G.711 μ-law @ 8kHz)
 - Configuraciones: modelo de escucha, modelo de habla, modelo LLM, prompt del agente
 
@@ -259,11 +259,11 @@ Establece `AI_VENDOR=gemini` en `.env`:
 AI_VENDOR=gemini
 GEMINI_API_KEY=your-key-here
 AGENT_PROMPT_FILE=agent_prompt.yaml
-GEMINI_MODEL=gemini-3.1-flash-live-preview
+GEMINI_MODEL=gemini-3.8-live
 GEMINI_VOICE=Puck
 ```
 
-Modelos compatibles (funciona cualquier modelo de la API Live): `gemini-3.1-flash-live-preview` (predeterminado), `gemini-2.5-flash-native-audio-preview-12-2025`.
+Modelos compatibles (funciona cualquier modelo de la API Live): `gemini-3.8-live` (predeterminado); previews heredadas `gemini-3.1-flash-live-preview`, `gemini-2.5-flash-native-audio-preview-12-2025`.
 
 Voces disponibles: `Puck`, `Charon`, `Kore`, `Fenrir`, `Aoede`
 
@@ -287,7 +287,6 @@ Voces integradas disponibles: `eve` (predeterminado), `ara`, `leo`, `rex`, `sal`
 
 Modelos disponibles:
 - `grok-voice-think-fast-2.0` (recomendado: última generación, mejor UX con razonamiento)
-- `grok-voice-think-fast-1.0` (generación anterior, versión fijada)
 - `grok-voice-latest` (alias que siempre apunta a la versión más reciente)
 
 Obtén tu clave API en [xAI Console](https://console.x.ai/).
