@@ -6,7 +6,7 @@ Manages a single SIP call with RTP session, audio bridge, and AI integration.
 import asyncio
 import contextlib
 import random
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, cast
 
 import structlog
 
@@ -127,7 +127,7 @@ class AsyncCall:
         self.call_session: Optional['CallSession'] = None  # AI session
 
         self._running = False
-        self._session_task: Optional[asyncio.Task] = None
+        self._session_task: Optional[asyncio.Task[None]] = None
 
         # Teardown state
         self._stop_requested = asyncio.Event()
@@ -296,7 +296,7 @@ class AsyncCall:
         if self.state == STATE_ANSWERED:
             self.state = STATE_CONFIRMED
 
-    async def resend_last_response(self, addr: tuple) -> None:
+    async def resend_last_response(self, addr: tuple[str, int]) -> None:
         """Resend the last response for a retransmitted initial INVITE.
 
         Args:
@@ -308,7 +308,7 @@ class AsyncCall:
         await self.sip.send_message(response, addr)
         logger.debug("Retransmitted INVITE - last response resent", call_id=self.call_id, state=self.state)
 
-    async def resend_200_ok(self, addr: tuple) -> None:
+    async def resend_200_ok(self, addr: tuple[str, int]) -> None:
         """Resend the last response for a retransmitted initial INVITE."""
         await self.resend_last_response(addr)
 
@@ -349,7 +349,7 @@ class AsyncCall:
         if self._error_retransmit_task and not self._error_retransmit_task.done():
             self._error_retransmit_task.cancel()
 
-    async def handle_reinvite(self, reinvite: SIPMessage, addr: tuple) -> None:
+    async def handle_reinvite(self, reinvite: SIPMessage, addr: tuple[str, int]) -> None:
         """Handle an in-dialog INVITE (re-INVITE) for this call.
 
         Answers with the same local port and codec. The remote RTP address,
@@ -574,7 +574,7 @@ class AsyncCall:
 
                 except* PortBindError as eg:
                     # RTP port binding failed
-                    port_error = eg.exceptions[0]
+                    port_error = cast(PortBindError, eg.exceptions[0])
                     logger.warning(
                         "RTP port bind failed, retrying with new port",
                         call_id=self.call_id,
@@ -609,7 +609,7 @@ class AsyncCall:
                         raise
 
                 except* CallTerminated as eg:
-                    reason = eg.exceptions[0].reason
+                    reason = cast(CallTerminated, eg.exceptions[0]).reason
                     logger.info("Call terminating", call_id=self.call_id, reason=reason)
                     if not self._stop_requested.is_set():
                         hangup_reason = reason

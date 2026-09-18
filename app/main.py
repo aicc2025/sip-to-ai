@@ -49,7 +49,7 @@ def setup_logging() -> None:
     )
 
     # Configure structlog
-    processors = [
+    processors: list[structlog.typing.Processor] = [
         structlog.stdlib.filter_by_level,
         structlog.stdlib.add_logger_name,
         structlog.stdlib.add_log_level,

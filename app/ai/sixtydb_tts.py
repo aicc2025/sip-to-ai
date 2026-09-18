@@ -30,7 +30,7 @@ from typing import Awaitable, Callable, Optional
 
 import structlog
 import websockets
-from websockets.client import WebSocketClientProtocol
+from websockets.asyncio.client import ClientConnection
 
 
 class SixtyDBTTSClient:
@@ -86,12 +86,12 @@ class SixtyDBTTSClient:
         self._on_flush_complete = on_flush_complete
         self._ws_url = ws_url or self.WS_URL
 
-        self._ws: Optional[WebSocketClientProtocol] = None
+        self._ws: Optional[ClientConnection] = None
         self._connected = False
         # Single persistent synthesis context for the whole call.
         self._context_id = "sip-to-ai"
         self._context_ready = asyncio.Event()
-        self._receive_task: Optional[asyncio.Task] = None
+        self._receive_task: Optional[asyncio.Task[None]] = None
 
         self._logger = structlog.get_logger(__name__)
 

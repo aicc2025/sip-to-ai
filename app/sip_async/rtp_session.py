@@ -203,7 +203,7 @@ class RTPProtocol(asyncio.DatagramProtocol):
         self.session.transport = transport  # type: ignore
         logger.debug("RTP protocol connection made")
 
-    def datagram_received(self, data: bytes, addr: tuple) -> None:
+    def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:
         """Called when RTP packet is received (event-driven, no explicit timing needed).
 
         Args:
@@ -340,11 +340,11 @@ class RTPSession:
         self._latched = False
         self._latched_ssrc: Optional[int] = None
         self._latched_last_rx = 0.0
-        self._latch_candidate: Optional[tuple[tuple, int]] = None  # (addr, ssrc)
+        self._latch_candidate: Optional[tuple[tuple[str, int], int]] = None  # (addr, ssrc)
         self._latch_count = 0
         self._latch_candidate_last_rx = 0.0
         # Sources of the previous SDP address (before a re-INVITE changed it)
-        self._stale_sources: set[tuple] = set()
+        self._stale_sources: set[tuple[str, int]] = set()
 
         # Outbound media enabled (False while on hold: recvonly/inactive answer
         # or c=0.0.0.0)
@@ -396,7 +396,7 @@ class RTPSession:
             remote_addr=self.remote_addr,
         )
 
-    def observe_source(self, addr: tuple, ssrc: int, now: Optional[float] = None) -> bool:
+    def observe_source(self, addr: tuple[str, int], ssrc: int, now: Optional[float] = None) -> bool:
         """Track the source of the caller's RTP (symmetric RTP) and filter sources.
 
         Called for each valid inbound packet (expected payload type). Rules:
@@ -461,7 +461,7 @@ class RTPSession:
         self._latch(source, ssrc, now, reason="observed source")
         return True
 
-    def _latch(self, source: tuple, ssrc: int, now: float, reason: str) -> None:
+    def _latch(self, source: tuple[str, int], ssrc: int, now: float, reason: str) -> None:
         """Latch the send address to source."""
         previous = tuple(self.remote_addr) if self._latched else None
         self._latched = True
@@ -500,7 +500,7 @@ class RTPSession:
                 new_sdp_remote_addr=remote_addr,
             )
             self._stale_sources = {
-                tuple(self.sdp_remote_addr),
+                (self.sdp_remote_addr[0], self.sdp_remote_addr[1]),
                 (self.remote_addr[0], int(self.remote_addr[1])),
             }
             self._stale_sources.discard(tuple(remote_addr))

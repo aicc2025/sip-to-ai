@@ -50,11 +50,11 @@ import base64
 import json
 import os
 import time
-from typing import AsyncIterator, Dict, Optional
+from typing import Any, AsyncIterator, Dict, Optional
 
 import structlog
 import websockets
-from websockets.client import WebSocketClientProtocol
+from websockets.asyncio.client import ClientConnection
 
 from app.ai.duplex_base import AiDuplexBase, AiEvent, AiEventType, AudioChunkQueue, describe_error
 from app.utils.codec import Codec, resample_pcm16
@@ -140,7 +140,7 @@ class OpenAIRealtimeClient(AiDuplexBase):
         self._organization = organization or os.getenv("OPENAI_ORGANIZATION") or os.getenv("OPENAI_ORG_ID")
         self._instructions = instructions
         self._greeting = greeting
-        self._ws: Optional[WebSocketClientProtocol] = None
+        self._ws: Optional[ClientConnection] = None
         self._ws_url = ws_endpoint.rstrip("/")
 
         # Audio never blocks the WebSocket reader (see AudioChunkQueue); events
@@ -338,7 +338,7 @@ class OpenAIRealtimeClient(AiDuplexBase):
                 self._logger.error("Event stream error", error=str(e))
                 break
 
-    async def update_session(self, config: Dict) -> None:
+    async def update_session(self, config: Dict[str, Any]) -> None:
         """Update session configuration.
 
         Args:
@@ -398,19 +398,19 @@ class OpenAIRealtimeClient(AiDuplexBase):
                     raise ConnectionError(f"OpenAI rejected {name}: {self._connect_error}")
                 await asyncio.sleep(0.05)
 
-    def _audio_format_payload(self) -> Dict:
+    def _audio_format_payload(self) -> Dict[str, Any]:
         """Return the session audio format object for the configured audio format."""
         if self._pcm16_mode:
             return {"type": self._audio_format, "rate": self._openai_sample_rate}
         return {"type": self._audio_format}
 
-    def _build_session_config(self) -> Dict:
+    def _build_session_config(self) -> Dict[str, Any]:
         """Build the initial session.update event (GA schema)."""
-        noise_reduction: Optional[Dict] = None
+        noise_reduction: Optional[Dict[str, Any]] = None
         if self._noise_reduction != "none":
             noise_reduction = {"type": self._noise_reduction}
 
-        output: Dict = {"format": self._audio_format_payload()}
+        output: Dict[str, Any] = {"format": self._audio_format_payload()}
         # An empty voice leaves the server-side default voice in place
         if self._voice:
             output["voice"] = self._voice
@@ -457,6 +457,8 @@ class OpenAIRealtimeClient(AiDuplexBase):
         # Log the full config for debugging
         self._logger.debug(f"Session config: {json.dumps(config, indent=2)}")
 
+        # Only called from connect() after the WebSocket is established
+        assert self._ws is not None
         await self._ws.send(json.dumps(config))
 
     async def _send_greeting(self, out_of_band: bool = True) -> None:
@@ -470,7 +472,7 @@ class OpenAIRealtimeClient(AiDuplexBase):
         if not self._ws or not self._greeting:
             return
 
-        response: Dict = {
+        response: Dict[str, Any] = {
             "instructions": self._greeting,
             "output_modalities": ["audio"],
             "metadata": {
@@ -541,7 +543,7 @@ class OpenAIRealtimeClient(AiDuplexBase):
             except Exception as e:
                 self._logger.error("Message handler error", error=str(e))
 
-    async def _process_message(self, data: Dict) -> None:
+    async def _process_message(self, data: Dict[str, Any]) -> None:
         """Process WebSocket message.
 
         Args:
@@ -707,7 +709,7 @@ class OpenAIRealtimeClient(AiDuplexBase):
             # Log unhandled events for debugging
             self._logger.debug(f"Unhandled event: {msg_type}", data=data)
 
-    def _format_error_message(self, err: Dict) -> str:
+    def _format_error_message(self, err: Dict[str, Any]) -> str:
         """Return a useful error string without logging credentials."""
         message = err.get("message") or "unknown error"
         code = err.get("code")
