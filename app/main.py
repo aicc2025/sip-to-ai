@@ -353,7 +353,7 @@ async def main() -> None:
 
     logger.info(
         "SIP-to-AI Bridge starting",
-        version="0.1.0",
+        version="0.3.0",
         ai_vendor=config.ai.vendor
     )
 
@@ -397,7 +397,7 @@ def cli() -> None:
     parser.add_argument(
         "--version",
         action="version",
-        version="%(prog)s 0.1.0"
+        version="%(prog)s 0.3.0"
     )
 
     args = parser.parse_args()
