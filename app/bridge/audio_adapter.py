@@ -1,7 +1,7 @@
 """Audio adapter between SIP and AI services."""
 
 import asyncio
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 import structlog
 
@@ -50,7 +50,7 @@ class AudioAdapter:
         self._logger = structlog.get_logger(__name__)
         self._logger.info("AudioAdapter initialized (PCM16 passthrough mode)")
 
-    def _log_periodic(self, counter: int, interval: int, message: str, **kwargs) -> None:
+    def _log_periodic(self, counter: int, interval: int, message: str, **kwargs: Any) -> None:
         """Log message periodically based on counter.
 
         Args:
@@ -207,7 +207,7 @@ class AudioAdapter:
 
         return dropped
 
-    def get_stats(self) -> dict:
+    def get_stats(self) -> dict[str, Any]:
         """Get bridge statistics.
 
         Returns:

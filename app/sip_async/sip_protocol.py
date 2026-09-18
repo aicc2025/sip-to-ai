@@ -8,9 +8,12 @@ import re
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional, cast
 
 import structlog
+
+if TYPE_CHECKING:
+    from app.sip_async.async_sip_server import AsyncSIPServer
 
 logger = structlog.get_logger(__name__)
 
@@ -59,7 +62,7 @@ class SIPMessage:
     # Source address
     remote_addr: tuple[str, int] = ("", 0)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Parse message if raw data provided."""
         if self.raw:
             self.parse(self.raw)
@@ -325,11 +328,13 @@ class SIPProtocol(asyncio.DatagramProtocol):
 
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
         """Called when UDP socket is ready."""
-        self.transport = transport  # type: ignore
-        self.server.transport = transport  # type: ignore
+        # create_datagram_endpoint always passes a DatagramTransport
+        datagram_transport = cast(asyncio.DatagramTransport, transport)
+        self.transport = datagram_transport
+        self.server.transport = datagram_transport
         logger.info("SIP protocol connection made")
 
-    def datagram_received(self, data: bytes, addr: tuple) -> None:
+    def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:
         """Called when SIP message is received.
 
         Args:
@@ -349,7 +354,7 @@ class SIPProtocol(asyncio.DatagramProtocol):
         except Exception as e:
             logger.error("SIP message parse error", error=str(e), addr=addr)
 
-    def _handle_message_task_done(self, task: asyncio.Task) -> None:
+    def _handle_message_task_done(self, task: asyncio.Task[None]) -> None:
         """Handle message task completion and check for exceptions.
 
         Args:

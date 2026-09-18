@@ -5,7 +5,7 @@ Supports loading large prompts and greetings that exceed environment variable li
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 import structlog
 import yaml
@@ -26,7 +26,7 @@ class AgentConfig:
 
     instructions: str = "You are a helpful voice assistant."
     greeting: Optional[str] = None
-    metadata: Optional[Dict] = None
+    metadata: Optional[Dict[str, Any]] = None
 
     @classmethod
     def from_yaml(cls, file_path: str | Path) -> "AgentConfig":
@@ -114,7 +114,7 @@ class AgentConfig:
         # If file_path is specified, loading MUST succeed (fail-fast)
         return cls.from_yaml(file_path)
 
-    def to_dict(self) -> Dict:
+    def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for logging/debugging.
 
         Returns:

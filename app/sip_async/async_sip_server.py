@@ -8,7 +8,8 @@ import asyncio
 import random
 import time
 import uuid
-from typing import Callable, Optional
+from collections.abc import Callable, Coroutine
+from typing import Any, Optional
 
 import structlog
 
@@ -38,7 +39,9 @@ class AsyncSIPServer:
         self,
         host: str,
         port: int,
-        call_callback: Optional[Callable[[AsyncCall], None]] = None,
+        call_callback: Optional[
+            Callable[[AsyncCall], Optional[Coroutine[Any, Any, None]]]
+        ] = None,
         ai_connect_timeout: Optional[float] = None
     ):
         """Initialize SIP server.
@@ -84,8 +87,8 @@ class AsyncSIPServer:
             local_addr=(self.host, self.port)
         )
 
-        self.transport = transport  # type: ignore
-        self.protocol = protocol  # type: ignore
+        self.transport = transport
+        self.protocol = protocol
         self._running = True
 
         logger.info(
@@ -236,7 +239,7 @@ class AsyncSIPServer:
             if port in self._allocated_ports:
                 self._allocated_ports.remove(port)
 
-    async def handle_message(self, msg: SIPMessage, addr: tuple) -> None:
+    async def handle_message(self, msg: SIPMessage, addr: tuple[str, int]) -> None:
         """Handle incoming SIP message.
 
         Args:
@@ -258,7 +261,7 @@ class AsyncSIPServer:
                 exc_info=True
             )
 
-    async def _handle_request(self, msg: SIPMessage, addr: tuple) -> None:
+    async def _handle_request(self, msg: SIPMessage, addr: tuple[str, int]) -> None:
         """Handle SIP request.
 
         Args:
@@ -309,7 +312,7 @@ class AsyncSIPServer:
         if call is not None:
             call.on_ack()
 
-    async def _handle_cancel(self, cancel: SIPMessage, addr: tuple) -> None:
+    async def _handle_cancel(self, cancel: SIPMessage, addr: tuple[str, int]) -> None:
         """Handle CANCEL of a pending initial INVITE.
 
         200 OK answers the CANCEL; if the INVITE is not answered yet it gets
@@ -341,7 +344,7 @@ class AsyncSIPServer:
         await self._send_simple_response(cancel, addr, 200, "OK", to_tag=call.dialog.local_tag)
         await call.cancel()
 
-    async def _handle_invite(self, invite: SIPMessage, addr: tuple) -> None:
+    async def _handle_invite(self, invite: SIPMessage, addr: tuple[str, int]) -> None:
         """Handle INVITE request.
 
         - New Call-ID: create a call.
@@ -476,7 +479,7 @@ class AsyncSIPServer:
             else:
                 await call.stop()
 
-    def _handle_call_task_done(self, task: asyncio.Task) -> None:
+    def _handle_call_task_done(self, task: asyncio.Task[None]) -> None:
         """Handle call task completion and check for exceptions.
 
         Args:
@@ -498,7 +501,7 @@ class AsyncSIPServer:
             )
 
     @staticmethod
-    def _format_sip_header(header_name: str, header_value: any) -> list[str]:
+    def _format_sip_header(header_name: str, header_value: Any) -> list[str]:
         """Format parsed SIP header value to proper SIP format.
 
         Args:
@@ -549,7 +552,7 @@ class AsyncSIPServer:
             # Fallback for unknown headers
             return [f"{header_name}: {header_value}"]
 
-    async def _handle_bye(self, bye: SIPMessage, addr: tuple) -> None:
+    async def _handle_bye(self, bye: SIPMessage, addr: tuple[str, int]) -> None:
         """Handle BYE request (hangup).
 
         Args:
@@ -587,7 +590,7 @@ class AsyncSIPServer:
     async def _send_simple_response(
         self,
         request: SIPMessage,
-        addr: tuple,
+        addr: tuple[str, int],
         status_code: int,
         status_text: str,
         to_tag: Optional[str] = None,
@@ -625,7 +628,7 @@ class AsyncSIPServer:
         response = '\r\n'.join(lines).encode('utf-8')
         await self.send_message(response, addr)
 
-    async def _handle_response(self, response: SIPMessage, addr: tuple) -> None:
+    async def _handle_response(self, response: SIPMessage, addr: tuple[str, int]) -> None:
         """Handle SIP response.
 
         Args:
@@ -639,7 +642,7 @@ class AsyncSIPServer:
         )
         # We don't initiate calls, so no response handling needed
 
-    async def send_message(self, data: bytes, addr: tuple) -> None:
+    async def send_message(self, data: bytes, addr: tuple[str, int]) -> None:
         """Send SIP message.
 
         Args:

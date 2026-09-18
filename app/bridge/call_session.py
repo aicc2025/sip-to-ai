@@ -6,7 +6,7 @@ from typing import Optional
 
 import structlog
 
-from app.ai.duplex_base import AiEventType, describe_error, is_barge_in_event
+from app.ai.duplex_base import AiDuplexClient, AiEventType, describe_error, is_barge_in_event
 from app.bridge.audio_adapter import AudioAdapter
 from app.utils.constants import AudioConstants
 
@@ -33,7 +33,7 @@ class CallSession:
     def __init__(
         self,
         audio_adapter: AudioAdapter,
-        ai_client: any
+        ai_client: AiDuplexClient
     ) -> None:
         """Initialize call session.
 
