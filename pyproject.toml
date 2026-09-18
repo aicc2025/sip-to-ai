@@ -1,6 +1,6 @@
 [project]
 name = "sip-to-ai"
-version = "0.1.0"
+version = "0.3.0"
 description = "Bidirectional audio bridge between SIP/PJSUA2 and AI realtime voice services"
 readme = "README.md"
 requires-python = ">=3.12"
