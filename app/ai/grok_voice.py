@@ -18,11 +18,11 @@ import json
 import os
 import time
 import uuid
-from typing import AsyncIterator, Dict, Optional
+from typing import Any, AsyncIterator, Dict, Optional
 
 import structlog
 import websockets
-from websockets.client import WebSocketClientProtocol
+from websockets.asyncio.client import ClientConnection
 
 from app.ai.duplex_base import AiDuplexBase, AiEvent, AiEventType, AudioChunkQueue, describe_error
 from app.utils.codec import Codec
@@ -65,7 +65,7 @@ class GrokVoiceClient(AiDuplexBase):
         self._voice = voice
         self._instructions = instructions
         self._greeting = greeting
-        self._ws: Optional[WebSocketClientProtocol] = None
+        self._ws: Optional[ClientConnection] = None
         self._ws_url = ws_endpoint
 
         # Audio never blocks the WebSocket reader (see AudioChunkQueue)
@@ -109,7 +109,7 @@ class GrokVoiceClient(AiDuplexBase):
         if self._audio_frames_sent % 50 == 0:
             self._logger.info("📤 Sent audio frames to Grok", frames=self._audio_frames_sent)
 
-    async def _process_message(self, data: Dict) -> None:
+    async def _process_message(self, data: Dict[str, Any]) -> None:
         """Dispatch a single Grok server event."""
         msg_type = data.get("type")
         self._logger.debug("Received Grok event", msg_type=msg_type)
@@ -381,7 +381,7 @@ class GrokVoiceClient(AiDuplexBase):
                 self._logger.error("Grok event stream error", error=str(e))
                 break
 
-    async def update_session(self, config: Dict) -> None:
+    async def update_session(self, config: Dict[str, Any]) -> None:
         """Send a session.update with the given config payload."""
         if not self._connected or not self._ws:
             raise ConnectionError("Not connected")

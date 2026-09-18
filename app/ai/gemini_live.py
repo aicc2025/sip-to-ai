@@ -311,7 +311,7 @@ class GeminiLiveClient(AiDuplexBase):
                 self._logger.error("Event stream error", error=str(e))
                 break
 
-    async def update_session(self, config: Dict) -> None:
+    async def update_session(self, config: Dict[str, Any]) -> None:
         """Update session configuration.
 
         Note: Gemini Live has limited session update support.
@@ -772,7 +772,7 @@ class GeminiLiveClient(AiDuplexBase):
             except Exception as e:
                 self._logger.error("Message handler error", error=str(e))
 
-    async def _process_message(self, data: Dict) -> None:
+    async def _process_message(self, data: Dict[str, Any]) -> None:
         """Process WebSocket message from Gemini.
 
         Args:

@@ -6,7 +6,7 @@ from abc import abstractmethod
 from collections import deque
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import AsyncIterator, Dict, Optional, Protocol, runtime_checkable
+from typing import Any, AsyncIterator, Dict, Optional, Protocol, runtime_checkable
 
 import structlog
 
@@ -38,7 +38,7 @@ class AiEvent:
     """AI event data."""
 
     type: AiEventType
-    data: Optional[Dict] = None
+    data: Optional[Dict[str, Any]] = None
     timestamp: float = 0.0
     error: Optional[str] = None
 
@@ -238,7 +238,7 @@ class AiDuplexClient(Protocol):
         ...
 
     @abstractmethod
-    async def receive_chunks(self) -> AsyncIterator[bytes]:
+    def receive_chunks(self) -> AsyncIterator[bytes]:
         """Iterate over received audio chunks from AI.
 
         Yields:
@@ -253,7 +253,7 @@ class AiDuplexClient(Protocol):
         ...
 
     @abstractmethod
-    async def events(self) -> AsyncIterator[AiEvent]:
+    def events(self) -> AsyncIterator[AiEvent]:
         """Iterate over events from AI.
 
         Yields:
@@ -265,7 +265,7 @@ class AiDuplexClient(Protocol):
         ...
 
     @abstractmethod
-    async def update_session(self, config: Dict) -> None:
+    async def update_session(self, config: Dict[str, Any]) -> None:
         """Update session configuration.
 
         Args:
@@ -373,7 +373,7 @@ class AiDuplexBase:
                 f"Invalid frame size: expected {self._frame_size}, got {len(frame)}"
             )
 
-    def create_session_config(self, **kwargs: any) -> SessionConfig:
+    def create_session_config(self, **kwargs: Any) -> SessionConfig:
         """Create session configuration.
 
         Args:

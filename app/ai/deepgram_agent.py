@@ -13,11 +13,11 @@ API Documentation:
 import asyncio
 import json
 import time
-from typing import TYPE_CHECKING, AsyncIterator, Dict, Optional
+from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, Optional
 
 import structlog
 import websockets
-from websockets.client import WebSocketClientProtocol
+from websockets.asyncio.client import ClientConnection
 
 from app.ai.duplex_base import AiDuplexBase, AiEvent, AiEventType, AudioChunkQueue, describe_error
 
@@ -113,7 +113,7 @@ class DeepgramAgentClient(AiDuplexBase):
             self._frame_size = (sample_rate * frame_ms) // 1000  # mulaw = 1 byte per sample
 
         self._ws_url = "wss://agent.deepgram.com/v1/agent/converse"
-        self._ws: Optional[WebSocketClientProtocol] = None
+        self._ws: Optional[ClientConnection] = None
 
         # Event queues (same pattern as OpenAI client)
         # Audio never blocks the WebSocket reader (see AudioChunkQueue)
@@ -121,7 +121,7 @@ class DeepgramAgentClient(AiDuplexBase):
         self._event_queue: asyncio.Queue[AiEvent] = asyncio.Queue(maxsize=100)
 
         # Background task for receiving messages
-        self._receive_task: Optional[asyncio.Task] = None
+        self._receive_task: Optional[asyncio.Task[None]] = None
 
         # Settings ready flag - wait for SettingsApplied before sending audio
         self._settings_ready = asyncio.Event()
@@ -138,7 +138,7 @@ class DeepgramAgentClient(AiDuplexBase):
         self._agent_audio_chunks = 0
 
         # KeepAlive task - send periodic KeepAlive messages
-        self._keepalive_task: Optional[asyncio.Task] = None
+        self._keepalive_task: Optional[asyncio.Task[None]] = None
 
         self._logger = structlog.get_logger(__name__)
 
@@ -245,7 +245,7 @@ class DeepgramAgentClient(AiDuplexBase):
         if not self._ws:
             return
 
-        agent_config: Dict = {
+        agent_config: Dict[str, Any] = {
             "listen": {
                 "provider": {
                     "type": "deepgram",
@@ -651,7 +651,7 @@ class DeepgramAgentClient(AiDuplexBase):
                 self._logger.error("Event stream error", error=str(e))
                 break
 
-    async def update_session(self, config: Dict) -> None:
+    async def update_session(self, config: Dict[str, Any]) -> None:
         """Update session configuration.
 
         Args:

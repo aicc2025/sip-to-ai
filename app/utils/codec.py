@@ -1,7 +1,8 @@
 """Audio codec for μ-law/A-law to PCM16 conversion."""
 
 import numpy as np
-from typing import Literal
+import numpy.typing as npt
+from typing import ClassVar, Literal
 
 
 class Codec:
@@ -14,6 +15,11 @@ class Codec:
     # A-law constants
     ALAW_MAX = 0xFFF
     ALAW_AMI_MASK = 0x55
+
+    # Lazily built lookup tables (created on first use)
+    _ulaw_table: ClassVar[npt.NDArray[np.int16]]
+    _alaw_table: ClassVar[npt.NDArray[np.int16]]
+    _pcm_to_ulaw_table: ClassVar[dict[int, int]]
 
     @staticmethod
     def ulaw_to_pcm16(ulaw_data: bytes) -> bytes:
@@ -57,7 +63,7 @@ class Codec:
         # Use lookup for common values, compute for others
         ulaw_array = np.zeros(len(pcm_array), dtype=np.uint8)
         for i, sample in enumerate(pcm_array):
-            ulaw_array[i] = Codec._encode_ulaw_sample(sample)
+            ulaw_array[i] = Codec._encode_ulaw_sample(int(sample))
 
         return ulaw_array.tobytes()
 
@@ -94,12 +100,12 @@ class Codec:
         alaw_array = np.zeros(len(pcm_array), dtype=np.uint8)
 
         for i, sample in enumerate(pcm_array):
-            alaw_array[i] = Codec._encode_alaw_sample(sample)
+            alaw_array[i] = Codec._encode_alaw_sample(int(sample))
 
         return alaw_array.tobytes()
 
     @staticmethod
-    def _create_ulaw_table() -> np.ndarray:
+    def _create_ulaw_table() -> npt.NDArray[np.int16]:
         """Create μ-law to PCM16 lookup table."""
         table = np.zeros(256, dtype=np.int16)
         for i in range(256):
@@ -166,7 +172,7 @@ class Codec:
         return ~ulaw & 0xFF
 
     @staticmethod
-    def _create_alaw_table() -> np.ndarray:
+    def _create_alaw_table() -> npt.NDArray[np.int16]:
         """Create A-law to PCM16 lookup table."""
         table = np.zeros(256, dtype=np.int16)
         for i in range(256):
