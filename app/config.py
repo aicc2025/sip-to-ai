@@ -2,12 +2,38 @@
 
 import os
 from dataclasses import dataclass
-from typing import Literal
+from typing import Callable, Literal, Optional, TypeVar
 
 from dotenv import load_dotenv
 
 
 load_dotenv()
+
+
+_N = TypeVar("_N", int, float)
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    """Read a boolean env var (true/false/1/0/yes/no, case-insensitive)."""
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    if raw in ("true", "1", "yes"):
+        return True
+    if raw in ("false", "0", "no"):
+        return False
+    raise ValueError(f"{name} must be true/false/1/0/yes/no, got: {raw!r}")
+
+
+def _optional_number(name: str, cast: Callable[[str], _N]) -> Optional[_N]:
+    """Read an optional numeric env var; unset/blank -> None (setting not sent)."""
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return None
+    try:
+        return cast(raw)
+    except ValueError:
+        raise ValueError(f"{name} must be a number, got: {raw!r}") from None
 
 
 @dataclass(frozen=True)
@@ -112,12 +138,19 @@ class AIConfig:
 
     # Deepgram Configuration
     deepgram_api_key: str = ""
-    deepgram_listen_model: str = "nova-2"  # STT model (nova-2, nova-3)
-    deepgram_speak_model: str = "aura-asteria-en"  # TTS voice (when speak_provider=deepgram)
+    deepgram_listen_model: str = "flux-general-en"  # STT model (flux-general-en, or legacy nova-2/nova-3)
+    deepgram_speak_model: str = "flux-kit-en"  # TTS voice (when speak_provider=deepgram)
     deepgram_llm_model: str = "gpt-4o-mini"  # LLM model for agent
+    # Optional Flux turn-detection / TTS tuning; None = not sent (Deepgram defaults)
+    deepgram_eot_threshold: Optional[float] = None
+    deepgram_eager_eot_threshold: Optional[float] = None
+    deepgram_eot_timeout_ms: Optional[int] = None
+    deepgram_speak_speed: Optional[float] = None
+    # Let the caller interrupt the agent (Flux only). Disable on speakerphone/no-AEC lines.
+    deepgram_barge_in: bool = True
 
     # Speak provider: who renders the Deepgram agent's voice.
-    #   "deepgram" -> built-in Aura TTS (default)
+    #   "deepgram" -> built-in Deepgram TTS (default: Flux flux-kit-en)
     #   "60db"     -> Deepgram stays the brain (STT+LLM+turn-taking), 60db is the voice
     speak_provider: Literal["deepgram", "60db"] = "deepgram"
 
@@ -210,9 +243,14 @@ class Config:
             openai_audio_format=openai_audio_format,  # type: ignore
             openai_noise_reduction=openai_noise_reduction,  # type: ignore
             deepgram_api_key=os.getenv("DEEPGRAM_API_KEY", ""),
-            deepgram_listen_model=os.getenv("DEEPGRAM_LISTEN_MODEL", "nova-2"),
-            deepgram_speak_model=os.getenv("DEEPGRAM_SPEAK_MODEL", "aura-asteria-en"),
+            deepgram_listen_model=os.getenv("DEEPGRAM_LISTEN_MODEL", "flux-general-en"),
+            deepgram_speak_model=os.getenv("DEEPGRAM_SPEAK_MODEL", "flux-kit-en"),
             deepgram_llm_model=os.getenv("DEEPGRAM_LLM_MODEL", "gpt-4o-mini"),
+            deepgram_eot_threshold=_optional_number("DEEPGRAM_EOT_THRESHOLD", float),
+            deepgram_eager_eot_threshold=_optional_number("DEEPGRAM_EAGER_EOT_THRESHOLD", float),
+            deepgram_eot_timeout_ms=_optional_number("DEEPGRAM_EOT_TIMEOUT_MS", int),
+            deepgram_speak_speed=_optional_number("DEEPGRAM_SPEAK_SPEED", float),
+            deepgram_barge_in=_env_bool("DEEPGRAM_BARGE_IN", True),
             speak_provider=speak_provider,  # type: ignore
             sixtydb_api_key=os.getenv("SIXTYDB_API_KEY", ""),
             sixtydb_voice_id=os.getenv(

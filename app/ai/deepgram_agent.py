@@ -25,9 +25,92 @@ if TYPE_CHECKING:
     from app.ai.sixtydb_tts import SixtyDBTTSClient
 
 # STT language for agent.listen.provider.language (agent.language is deprecated).
-# Not set on agent.speak.provider: Deepgram voices carry their language in the
-# model name and reject a speak-side "language" field.
+# Only sent for legacy (v1) listen models. Flux models carry their language in
+# the model name (flux-general-en / flux-general-multi).
+# Never set on agent.speak.provider: Deepgram voices carry their language in the
+# model name and reject a speak-side "language" field (UNPARSABLE_CLIENT_MESSAGE).
 LISTEN_LANGUAGE = "en"
+
+
+def is_flux_model(model: str) -> bool:
+    """True for Deepgram Flux models (flux-general-*, flux-kit-*, ...)."""
+    return model.strip().lower().startswith("flux-")
+
+
+def provider_version(model: str) -> str:
+    """Provider API version for a Deepgram model: Flux needs "v2", others "v1"."""
+    return "v2" if is_flux_model(model) else "v1"
+
+
+def build_settings(
+    *,
+    audio_format: str,
+    sample_rate: int,
+    listen_model: str,
+    speak_model: str,
+    llm_model: str,
+    instructions: str,
+    greeting: Optional[str] = None,
+    speak_provider: str = "deepgram",
+    eot_threshold: Optional[float] = None,
+    eager_eot_threshold: Optional[float] = None,
+    eot_timeout_ms: Optional[int] = None,
+    speak_speed: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Build the Voice Agent ``Settings`` message (pure, no I/O).
+
+    Optional Flux turn-detection knobs are only sent when set and only for Flux
+    listen models; ``speak_speed`` only when set.
+    """
+    listen_provider: Dict[str, Any] = {
+        "type": "deepgram",
+        "version": provider_version(listen_model),
+        "model": listen_model,
+    }
+    if is_flux_model(listen_model):
+        if eot_threshold is not None:
+            listen_provider["eot_threshold"] = eot_threshold
+        if eager_eot_threshold is not None:
+            listen_provider["eager_eot_threshold"] = eager_eot_threshold
+        if eot_timeout_ms is not None:
+            listen_provider["eot_timeout_ms"] = eot_timeout_ms
+    else:
+        listen_provider["language"] = LISTEN_LANGUAGE
+
+    speak_prov: Dict[str, Any] = {
+        "type": "deepgram",
+        "version": provider_version(speak_model),
+        "model": speak_model,
+    }
+    if speak_speed is not None:
+        speak_prov["speed"] = speak_speed
+
+    agent_config: Dict[str, Any] = {
+        "listen": {"provider": listen_provider},
+        "think": {
+            "provider": {"type": "open_ai", "model": llm_model},
+            "prompt": instructions,
+        },
+        "speak": {"provider": speak_prov},
+    }
+
+    # When 60db is the voice, we speak the greeting ourselves via 60db so
+    # Deepgram does not auto-greet with its own (ignored) audio.
+    if greeting and speak_provider != "60db":
+        agent_config["greeting"] = greeting
+
+    return {
+        "type": "Settings",
+        "audio": {
+            "input": {"encoding": audio_format, "sample_rate": sample_rate},
+            "output": {
+                "encoding": audio_format,
+                "sample_rate": sample_rate,
+                "container": "none",
+            },
+        },
+        "agent": agent_config,
+    }
 
 
 class DeepgramAgentClient(AiDuplexBase):
@@ -48,14 +131,19 @@ class DeepgramAgentClient(AiDuplexBase):
         sample_rate: int = 8000,
         frame_ms: int = 20,
         audio_format: str = "mulaw",
-        listen_model: str = "nova-2",
-        speak_model: str = "aura-asteria-en",
+        listen_model: str = "flux-general-en",
+        speak_model: str = "flux-kit-en",
         llm_model: str = "gpt-4o-mini",
         instructions: str = "You are a helpful voice assistant.",
         greeting: Optional[str] = None,
         speak_provider: str = "deepgram",
         sixtydb_api_key: Optional[str] = None,
         sixtydb_voice_id: Optional[str] = None,
+        eot_threshold: Optional[float] = None,
+        eager_eot_threshold: Optional[float] = None,
+        eot_timeout_ms: Optional[int] = None,
+        speak_speed: Optional[float] = None,
+        barge_in: bool = True,
     ) -> None:
         """Initialize Deepgram Voice Agent client.
 
@@ -64,15 +152,23 @@ class DeepgramAgentClient(AiDuplexBase):
             sample_rate: Audio sample rate (must be 8000 for mulaw)
             frame_ms: Frame duration in milliseconds
             audio_format: Audio format (mulaw for μ-law encoding)
-            listen_model: STT model (nova-2, nova-3)
+            listen_model: STT model (flux-general-en, or legacy nova-2/nova-3)
             speak_model: TTS voice model (used only when speak_provider="deepgram")
             llm_model: LLM model for agent
             instructions: Agent instructions/system prompt
             greeting: Optional greeting message spoken at call start
             speak_provider: Who renders the agent's voice: "deepgram" (built-in
-                Aura TTS) or "60db" (Deepgram stays the brain, 60db is the voice).
+                Deepgram TTS) or "60db" (Deepgram stays the brain, 60db is the voice).
             sixtydb_api_key: 60db API key (required when speak_provider="60db")
             sixtydb_voice_id: 60db voice UUID (optional; defaults to 60db default)
+            eot_threshold: Flux end-of-turn confidence (0.5-1.0); sent only if set
+            eager_eot_threshold: Flux eager end-of-turn (0.3-0.9); sent only if set
+            eot_timeout_ms: Flux end-of-turn timeout; sent only if set
+            speak_speed: TTS speed multiplier; sent only if set
+            barge_in: Allow the caller to interrupt the agent (Flux listen models
+                only). False keeps the client half-duplex; use it on lines
+                without echo cancellation (e.g. speakerphone) to avoid
+                self-interruption.
         """
         # Initialize base class (same pattern as OpenAI client)
         super().__init__(sample_rate=sample_rate, frame_ms=frame_ms)
@@ -90,8 +186,13 @@ class DeepgramAgentClient(AiDuplexBase):
         self._llm_model = llm_model
         self._instructions = instructions
         self._greeting = greeting
+        self._eot_threshold = eot_threshold
+        self._eager_eot_threshold = eager_eot_threshold
+        self._eot_timeout_ms = eot_timeout_ms
+        self._speak_speed = speak_speed
+        self._barge_in = barge_in
 
-        # Speak provider: "deepgram" (built-in Aura) or "60db" (external voice).
+        # Speak provider: "deepgram" (built-in Deepgram TTS) or "60db" (external voice).
         self._speak_provider = speak_provider
         self._sixtydb: Optional["SixtyDBTTSClient"] = None
         if self._speak_provider == "60db":
@@ -131,6 +232,13 @@ class DeepgramAgentClient(AiDuplexBase):
         self._last_agent_audio_time = 0.0  # Timestamp of last agent audio
         self._received_first_audio = False  # Track if we've received any AI audio yet
         self._connect_time = 0.0  # monotonic timestamp set on connect()
+
+        # Greeting guard: while Deepgram speaks the greeting, caller frames are
+        # dropped unconditionally (an echoed greeting must not trigger Flux's
+        # UserStartedSpeaking and cut it). Only the first AgentAudioDone ends the
+        # phase; the usual 2 s tail then runs via _greeting_guard_until.
+        self._greeting_pending = bool(greeting) and speak_provider != "60db"
+        self._greeting_guard_until = 0.0  # wall-clock end of the post-greeting tail
 
         # Media-path diagnostics (issue #6): make silent audio drops visible.
         self._caller_frames_forwarded = 0
@@ -240,54 +348,38 @@ class DeepgramAgentClient(AiDuplexBase):
             ))
             raise
 
+    def _build_settings(self) -> Dict[str, Any]:
+        """Settings message for this client's configuration."""
+        return build_settings(
+            audio_format=self._audio_format,
+            sample_rate=self._sample_rate,
+            listen_model=self._listen_model,
+            speak_model=self._speak_model,
+            llm_model=self._llm_model,
+            instructions=self._instructions,
+            greeting=self._greeting,
+            speak_provider=self._speak_provider,
+            eot_threshold=self._eot_threshold,
+            eager_eot_threshold=self._eager_eot_threshold,
+            eot_timeout_ms=self._eot_timeout_ms,
+            speak_speed=self._speak_speed,
+        )
+
+    @property
+    def _half_duplex(self) -> bool:
+        """True when caller frames must be dropped while the agent speaks."""
+        return (
+            self._speak_provider == "60db"
+            or not is_flux_model(self._listen_model)
+            or not self._barge_in
+        )
+
     async def _send_session_config(self) -> None:
         """Send session configuration to Deepgram."""
         if not self._ws:
             return
 
-        agent_config: Dict[str, Any] = {
-            "listen": {
-                "provider": {
-                    "type": "deepgram",
-                    "model": self._listen_model,
-                    "language": LISTEN_LANGUAGE
-                }
-            },
-            "think": {
-                "provider": {
-                    "type": "open_ai",
-                    "model": self._llm_model
-                },
-                "prompt": self._instructions
-            },
-            "speak": {
-                "provider": {
-                    "type": "deepgram",
-                    "model": self._speak_model
-                }
-            }
-        }
-
-        # When 60db is the voice, we speak the greeting ourselves via 60db so
-        # Deepgram does not auto-greet with its own (ignored) audio.
-        if self._greeting and self._speak_provider != "60db":
-            agent_config["greeting"] = self._greeting
-
-        config = {
-            "type": "Settings",
-            "audio": {
-                "input": {
-                    "encoding": self._audio_format,
-                    "sample_rate": self._sample_rate
-                },
-                "output": {
-                    "encoding": self._audio_format,
-                    "sample_rate": self._sample_rate,
-                    "container": "none"
-                }
-            },
-            "agent": agent_config
-        }
+        config = self._build_settings()
 
         await self._ws.send(json.dumps(config))
         self._logger.info(
@@ -374,18 +466,29 @@ class DeepgramAgentClient(AiDuplexBase):
                     self._drop_caller_frame("awaiting_first_audio")
                     return
                 self._received_first_audio = True
+                # The greeting never played; don't guard against it forever.
+                self._greeting_pending = False
                 self._logger.warning(
                     "No AI audio received - opening caller audio gate to avoid deadlock",
                     waited_sec=round(waited, 1),
                 )
 
-            # Skip sending audio while agent is speaking (prevent barge-in)
-            current_time = time.time()
-            time_since_last_audio = current_time - self._last_agent_audio_time
-
-            if self._agent_speaking or time_since_last_audio < 2.0:
-                self._drop_caller_frame("agent_speaking")
+            # Greeting guard (see __init__): applies even with Flux full-duplex.
+            if self._greeting_pending or time.time() < self._greeting_guard_until:
+                self._drop_caller_frame("greeting")
                 return
+
+            # Half-duplex guard: skip caller audio while the agent is speaking
+            # (and 2 s after) so line echo can't trip legacy VAD. Flux models
+            # detect turns server-side and emit UserStartedSpeaking, so caller
+            # audio is always forwarded and the caller can interrupt (barge-in).
+            # 60db voice stays half-duplex: Deepgram's own audio is ignored there,
+            # so its server-side interruption can't stop the 60db playback.
+            if self._half_duplex:
+                time_since_last_audio = time.time() - self._last_agent_audio_time
+                if self._agent_speaking or time_since_last_audio < 2.0:
+                    self._drop_caller_frame("agent_speaking")
+                    return
 
             # Convert PCM16 → mulaw
             from app.utils.codec import Codec
@@ -561,8 +664,19 @@ class DeepgramAgentClient(AiDuplexBase):
         try:
             data = json.loads(message)
             msg_type = data.get("type")
+            if msg_type == "LatencyReport":
+                # Sent many times per turn; keep at debug to avoid flooding.
+                self._logger.debug("Deepgram latency report", payload=data)
+            elif msg_type == "Warning":
+                self._logger.warning("Deepgram warning", payload=data)
+            elif msg_type not in ("ConversationText", "History", "Welcome"):
+                self._logger.info("Deepgram event", event_type=msg_type)
 
             if msg_type == "UserStartedSpeaking":
+                # Server-side barge-in: Deepgram stops the agent. Mark it silent;
+                # the bridge flushes queued audio via the BARGE_IN event below.
+                if self._speak_provider != "60db":
+                    self._agent_speaking = False
                 self._emit_event(AiEvent(
                     type=AiEventType.TRANSCRIPT_PARTIAL,
                     data={"event": "user_started_speaking"}
@@ -579,6 +693,11 @@ class DeepgramAgentClient(AiDuplexBase):
                 # "done" signal must not clear the flag — 60db's flush_completed does.
                 if self._speak_provider != "60db":
                     self._agent_speaking = False
+                if self._greeting_pending:
+                    # First AgentAudioDone = greeting finished; keep dropping for
+                    # the 2 s tail after the last greeting audio.
+                    self._greeting_pending = False
+                    self._greeting_guard_until = self._last_agent_audio_time + 2.0
                 self._emit_event(AiEvent(
                     type=AiEventType.TRANSCRIPT_FINAL,
                     data={"event": "agent_audio_done"}
@@ -608,9 +727,10 @@ class DeepgramAgentClient(AiDuplexBase):
                 # Deepgram emits the conversation transcript for both sides:
                 #   {"type": "ConversationText", "role": "assistant"|"user", "content": "..."}
                 # When 60db is the voice, the assistant's text is what we synthesize.
+                role = data.get("role")
+                content = data.get("content", "")
+                self._logger.debug("Conversation text", role=role, content=content)
                 if self._speak_provider == "60db" and self._sixtydb is not None:
-                    role = data.get("role")
-                    content = data.get("content", "")
                     if role == "assistant" and content.strip():
                         await self._sixtydb.speak(content)
 
