@@ -198,6 +198,11 @@ def create_ai_client() -> AiDuplexClient:
             speak_provider=config.ai.speak_provider,
             sixtydb_api_key=config.ai.sixtydb_api_key,
             sixtydb_voice_id=config.ai.sixtydb_voice_id,
+            eot_threshold=config.ai.deepgram_eot_threshold,
+            eager_eot_threshold=config.ai.deepgram_eager_eot_threshold,
+            eot_timeout_ms=config.ai.deepgram_eot_timeout_ms,
+            speak_speed=config.ai.deepgram_speak_speed,
+            barge_in=config.ai.deepgram_barge_in,
         )
 
     elif vendor == "gemini":

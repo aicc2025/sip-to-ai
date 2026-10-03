@@ -199,8 +199,8 @@ Establece `AI_VENDOR=deepgram` en `.env`:
 AI_VENDOR=deepgram
 DEEPGRAM_API_KEY=your-key-here
 AGENT_PROMPT_FILE=agent_prompt.yaml  
-DEEPGRAM_LISTEN_MODEL=nova-2
-DEEPGRAM_SPEAK_MODEL=aura-asteria-en
+DEEPGRAM_LISTEN_MODEL=flux-general-en
+DEEPGRAM_SPEAK_MODEL=flux-kit-en
 DEEPGRAM_LLM_MODEL=gpt-4o-mini
 ```
 
@@ -211,6 +211,32 @@ instructions: |
 
 greeting: "Hello! How can I help you today?"
 ```
+
+Los valores por defecto son los modelos recomendados por Deepgram: **Flux STT** (`flux-general-en`), `gpt-4o-mini`
+y **Flux TTS** (`flux-kit-en`). `gpt-5-mini` también es compatible, pero en llamadas reales resultó notablemente más lento por turno (1,5-6,6 s frente a 0,1-0,4 s). El cliente envía `version: "v2"` para los modelos `flux-*` y `"v1"` para el resto,
+por lo que la configuración anterior sigue funcionando:
+
+```bash
+DEEPGRAM_LISTEN_MODEL=nova-2
+DEEPGRAM_SPEAK_MODEL=aura-asteria-en
+DEEPGRAM_LLM_MODEL=gpt-4o-mini
+```
+
+- **Interjección (barge-in):** con un modelo de escucha Flux, el audio del llamante siempre se reenvía y la
+  detección de turnos del servidor de Deepgram (`UserStartedSpeaking`) permite al llamante interrumpir al agente;
+  el audio del agente en cola se descarta. Los modelos antiguos `nova-*` y `SPEAK_PROVIDER=60db` siguen siendo
+  semidúplex (el audio del llamante se descarta mientras el agente habla y durante 2 s después). El saludo siempre
+  está protegido: el audio del llamante se descarta hasta que termina (primer `AgentAudioDone`, más 2 s de cola).
+  Con altavoz (speakerphone) o líneas sin cancelación de eco, el agente se oye a sí mismo y se interrumpe;
+  usa `DEEPGRAM_BARGE_IN=false` (por defecto `true`; acepta true/false/1/0/yes/no) para mantenerlo semidúplex.
+- **Ajustes opcionales** (solo se envían si se definen; los tres primeros solo con modelos de escucha Flux):
+  `DEEPGRAM_EOT_THRESHOLD` (0.5-1.0, por defecto 0.7), `DEEPGRAM_EAGER_EOT_THRESHOLD` (0.3-0.9, no puede superar
+  el umbral EOT), `DEEPGRAM_EOT_TIMEOUT_MS` (por defecto 5000) y `DEEPGRAM_SPEAK_SPEED` (velocidad del TTS: Flux
+  0.5-1.5, Aura 0.7-1.5).
+- `language` no se envía con Flux (el idioma lo determina el nombre del modelo y la API rechaza el campo); nunca
+  se envía en el proveedor de voz (speak).
+- El audio se envía en tramas μ-law de 20 ms (Deepgram recomienda ~80 ms para Flux, pero se verificó que las
+  tramas de 20 ms funcionan con transcripciones correctas, y almacenar en búfer solo añadiría latencia).
 
 Obtén tu clave API en [Deepgram Console](https://console.deepgram.com).
 
@@ -225,7 +251,7 @@ de nuevo al llamante. Deepgram es el cerebro, 60db es la boca.
 ```bash
 AI_VENDOR=deepgram
 DEEPGRAM_API_KEY=your-deepgram-key
-DEEPGRAM_LISTEN_MODEL=nova-2
+DEEPGRAM_LISTEN_MODEL=flux-general-en
 DEEPGRAM_LLM_MODEL=gpt-4o-mini
 AGENT_PROMPT_FILE=agent_prompt.yaml
 
