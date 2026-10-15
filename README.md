@@ -20,7 +20,7 @@ This project:
 
 Simple passthrough bridge: **SIP (G.711 μ-law @ 8kHz)** ↔ **AI voice models**. OpenAI, Deepgram, and Grok support native G.711, Gemini requires PCM16 resampling (8kHz ↔ 16kHz/24kHz).
 
-**Not using an end-to-end voice model?** If you want separate ASR / LLM / TTS stages instead of a single speech-to-speech model, we **strongly recommend** [cascade-realtime-gateway](https://github.com/rasonyang/cascade-realtime-gateway) — see [Not Using an End-to-End Voice Model?](#not-using-an-end-to-end-voice-model).
+**Prefer a cascaded ASR → LLM → TTS pipeline?** sip-to-ai can drive one through [cascade-realtime-gateway](https://github.com/rasonyang/cascade-realtime-gateway), which exposes it as an OpenAI Realtime-compatible endpoint. [Details below](#not-using-an-end-to-end-voice-model).
 
 ## Quick Start (OpenAI Realtime)
 
