@@ -166,7 +166,7 @@ class AIConfig:
     # xAI Grok Voice Configuration
     grok_api_key: str = ""
     grok_ws_endpoint: str = "wss://api.x.ai/v1/realtime"
-    grok_model: str = "grok-voice-think-fast-2.0"
+    grok_model: str = "grok-voice-3.0"
     grok_voice: str = "eve"  # Built-in voices: eve (default), ara, leo, rex, sal
 
 
@@ -261,7 +261,7 @@ class Config:
             gemini_voice=os.getenv("GEMINI_VOICE", "Puck"),
             grok_api_key=os.getenv("XAI_API_KEY", ""),
             grok_ws_endpoint=os.getenv("GROK_WS_ENDPOINT", "wss://api.x.ai/v1/realtime"),
-            grok_model=os.getenv("GROK_MODEL", "grok-voice-think-fast-2.0"),
+            grok_model=os.getenv("GROK_MODEL", "grok-voice-3.0"),
             grok_voice=os.getenv("GROK_VOICE", "eve"),
         )
 

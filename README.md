@@ -16,7 +16,7 @@ This project:
 - ✅ **OpenAI Realtime API** (`gpt-realtime-2.1`)
 - ✅ **Deepgram Voice Agent**
 - ✅ **Gemini Live** (`gemini-3.8-live`)
-- ✅ **xAI Grok Voice** (grok-voice-think-fast-2.0)
+- ✅ **xAI Grok Voice** (grok-voice-3.0)
 
 Simple passthrough bridge: **SIP (G.711 μ-law @ 8kHz)** ↔ **AI voice models**. OpenAI, Deepgram, and Grok support native G.711, Gemini requires PCM16 resampling (8kHz ↔ 16kHz/24kHz).
 
@@ -305,14 +305,14 @@ Set `AI_VENDOR=grok` in `.env`:
 AI_VENDOR=grok
 XAI_API_KEY=your-key-here
 AGENT_PROMPT_FILE=agent_prompt.yaml
-GROK_MODEL=grok-voice-think-fast-2.0
+GROK_MODEL=grok-voice-3.0
 GROK_VOICE=eve
 ```
 
 Available built-in voices: `eve` (default), `ara`, `leo`, `rex`, `sal`.
 
 Available models:
-- `grok-voice-think-fast-2.0` (recommended — latest generation, best UX with reasoning)
+- `grok-voice-3.0` (recommended — latest generation, best UX with reasoning)
 - `grok-voice-latest` (alias that always tracks the newest release)
 
 Get your API key from [xAI Console](https://console.x.ai/).
